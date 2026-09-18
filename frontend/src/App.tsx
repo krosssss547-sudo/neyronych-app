@@ -6,8 +6,8 @@ declare global {
   }
 }
 
-type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard'
-type Topic = 'memory' | 'attention' | 'logic' | 'math' | 'differences' | 'speed' | 'colors' | 'words'
+type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard' | 'paywall' | 'premiumPurchase'
+type Topic = 'memory' | 'attention' | 'logic' | 'math' | 'differences' | 'speed' | 'colors' | 'words' | 'matrices' | 'reading'
 type Difficulty = 1 | 2 | 3
 type Background = 'space' | 'black' | 'white'
 type Lang = 'ru' | 'en'
@@ -21,6 +21,7 @@ type Task = {
   timeLimit?: number
   isColorTask?: boolean
   colorHex?: string
+  passage?: string
 }
 type AnswerResult = { is_correct: boolean; correct_answer: string; explanation: string; xp_earned: number }
 type TopicStats = Record<Topic, { total: number; correct: number }>
@@ -34,6 +35,12 @@ type UserStats = {
   total: number
   correct: number
   by_category: { category: string; total: number; correct: number }[]
+}
+type AccessStatus = {
+  trial_active: boolean
+  trial_seconds_left: number
+  subscription_active: boolean
+  owns_premium_topics: boolean
 }
 
 type Achievement = {
@@ -59,11 +66,13 @@ const ACHIEVEMENTS: Achievement[] = [
 ]
 
 const TOPIC_KEYS: Topic[] = ['memory', 'attention', 'logic', 'math', 'differences', 'speed', 'colors', 'words']
-const CLIENT_TOPICS: Topic[] = ['differences', 'speed', 'colors', 'words']
+const PREMIUM_TOPIC_KEYS: Topic[] = ['matrices', 'reading']
+const CLIENT_TOPICS: Topic[] = ['differences', 'speed', 'colors', 'words', 'matrices', 'reading']
 const DIFFICULTY_KEYS: Difficulty[] = [1, 2, 3]
 const TOPIC_EMOJI: Record<Topic, string> = {
   memory: '🧠', attention: '👁', logic: '🧩', math: '🔢',
   differences: '🔍', speed: '⚡', colors: '🎨', words: '🔤',
+  matrices: '🔲', reading: '📖',
 }
 const DIFFICULTY_EMOJI: Record<Difficulty, string> = { 1: '🟢', 2: '🟡', 3: '🔴' }
 const BACKGROUND_ORDER: Background[] = ['space', 'black', 'white']
@@ -92,7 +101,7 @@ function shuffleArray<T>(arr: T[]): T[] {
   return a
 }
 
-// ===== Генераторы для клиентских тем (Отличия/Скорость/Цвета/Слова) =====
+// ===== Генераторы для клиентских тем =====
 
 function generateSpeedTask(difficulty: Difficulty): Task {
   let a: number, b: number, timeLimit: number
@@ -173,6 +182,32 @@ function generateDifferencesBoard(difficulty: Difficulty): DiffBoard {
   return { size, diffCount, cells, diffPositions: positions }
 }
 
+// ===== Генераторы для премиум-тем =====
+
+const MATRICES_BANK: Record<Difficulty, { question: string; options: string[]; correct: string; explanation: string }[]> = {
+  1: [{ question: 'Продолжи ряд:\n🔵 🔶 🔵 🔶 🔵 ?', options: ['🔵', '🔶', '🟢', '🔺'], correct: '🔶', explanation: 'Фигуры чередуются через одну' }],
+  2: [{ question: 'Найди недостающую фигуру:\n🔺🔺 🔷🔷 🔺🔺🔺 🔷🔷🔷 ?', options: ['🔺🔺🔺🔺', '🔷🔷', '🔺', '🔷🔷🔷🔷'], correct: '🔺🔺🔺🔺', explanation: 'Каждая следующая группа того же символа на 1 больше предыдущей такой же' }],
+  3: [{ question: 'Закономерность: 🔵→🔵🔵→🔵🔵🔵🔵→🔵🔵🔵🔵🔵🔵🔵🔵\n\nСколько будет дальше?', options: ['12', '16', '10', '9'], correct: '16', explanation: 'Каждый раз количество удваивается: 1,2,4,8,16' }],
+}
+
+function generateMatricesTask(difficulty: Difficulty): Task {
+  const pool = MATRICES_BANK[difficulty]
+  const picked = pool[rand(0, pool.length - 1)]
+  return { task_id: 'matrix-' + Date.now(), ...picked }
+}
+
+const READING_BANK: Record<Difficulty, { passage: string; question: string; options: string[]; correct: string; explanation: string; readSeconds: number }[]> = {
+  1: [{ passage: 'Кот сидел на подоконнике и смотрел на дождь за окном. На улице было холодно, и он был рад, что находится дома в тепле.', question: 'Где сидел кот?', options: ['На диване', 'На подоконнике', 'В коробке', 'На столе'], correct: 'На подоконнике', explanation: 'В тексте прямо сказано: "сидел на подоконнике"', readSeconds: 8 }],
+  2: [{ passage: 'Экспедиция вышла на рассвете, чтобы успеть пересечь перевал до полудня, когда в горах обычно начинается сильный ветер и видимость резко падает.', question: 'Почему экспедиция вышла на рассвете?', options: ['Чтобы успеть пересечь перевал до ветра', 'Чтобы увидеть рассвет', 'Потому что так короче путь', 'Из-за холода ночью'], correct: 'Чтобы успеть пересечь перевал до ветра', explanation: 'Цель — пересечь перевал до полуденного ветра', readSeconds: 6 }],
+  3: [{ passage: 'Несмотря на то что первоначальный план предполагал запуск проекта в марте, команда приняла решение перенести дату на два месяца вперёд из-за задержек с поставкой оборудования.', question: 'На сколько месяцев перенесли запуск?', options: ['На один', 'На два', 'На три', 'Не перенесли'], correct: 'На два', explanation: 'В тексте: "перенести дату на два месяца вперёд"', readSeconds: 5 }],
+}
+
+function generateReadingTask(difficulty: Difficulty): Task {
+  const pool = READING_BANK[difficulty]
+  const picked = pool[rand(0, pool.length - 1)]
+  return { task_id: 'reading-' + Date.now(), question: picked.question, options: picked.options, correct: picked.correct, explanation: picked.explanation, passage: picked.passage, timeLimit: picked.readSeconds }
+}
+
 const I18N = {
   ru: {
     welcomeTitle: 'Приветствую, мой мозговитый друг',
@@ -194,7 +229,7 @@ const I18N = {
     warmupSubtitle: 'Пара вопросов, чтобы понять твой уровень',
     warmupResultTitle: 'Твой уровень',
     warmupLevels: { 1: 'Лёгкий 🟢', 2: 'Средний 🟡', 3: 'Сложный 🔴' } as Record<Difficulty, string>,
-    topics: { memory: 'Память', attention: 'Внимание', logic: 'Логика', math: 'Счёт', differences: 'Отличия', speed: 'Скорость', colors: 'Цвета', words: 'Слова' } as Record<Topic, string>,
+    topics: { memory: 'Память', attention: 'Внимание', logic: 'Логика', math: 'Счёт', differences: 'Отличия', speed: 'Скорость', colors: 'Цвета', words: 'Слова', matrices: 'Матрицы', reading: 'Скорочтение' } as Record<Topic, string>,
     difficulties: { 1: 'Лёгкий', 2: 'Средний', 3: 'Сложный' } as Record<Difficulty, string>,
     level: 'Уровень',
     xpTotal: 'Всего XP',
@@ -209,6 +244,17 @@ const I18N = {
     loadError: 'Не удалось загрузить задание',
     retryBtn: 'Повторить',
     memorizeHint: 'Запоминай — вопрос появится через пару секунд',
+    trialLabel: 'Пробный период',
+    subscribed: 'Подписка активна ✅',
+    trialOverTitle: 'Пробный период закончился',
+    trialOverSubtitle: 'Оформи подписку, чтобы продолжить тренировки',
+    payWithStars: 'Оплатить Stars',
+    payWithCrypto: 'Оплатить криптой',
+    premiumLockedNoSub: 'Доступно по подписке',
+    premiumBuyTitle: 'Открой премиум-темы',
+    premiumBuySubtitle: 'Матрицы и Скорочтение — разово и навсегда',
+    creatingInvoice: 'Создаём счёт...',
+    passageHiddenHint: 'Читай внимательно — текст скоро исчезнет',
   },
   en: {
     welcomeTitle: 'Hey there, my clever friend',
@@ -230,7 +276,7 @@ const I18N = {
     warmupSubtitle: 'A couple of questions to gauge your level',
     warmupResultTitle: 'Your level',
     warmupLevels: { 1: 'Easy 🟢', 2: 'Medium 🟡', 3: 'Hard 🔴' } as Record<Difficulty, string>,
-    topics: { memory: 'Memory', attention: 'Attention', logic: 'Logic', math: 'Math', differences: 'Differences', speed: 'Speed', colors: 'Colors', words: 'Words' } as Record<Topic, string>,
+    topics: { memory: 'Memory', attention: 'Attention', logic: 'Logic', math: 'Math', differences: 'Differences', speed: 'Speed', colors: 'Colors', words: 'Words', matrices: 'Matrices', reading: 'Speed reading' } as Record<Topic, string>,
     difficulties: { 1: 'Easy', 2: 'Medium', 3: 'Hard' } as Record<Difficulty, string>,
     level: 'Level',
     xpTotal: 'Total XP',
@@ -245,6 +291,17 @@ const I18N = {
     loadError: 'Could not load the task',
     retryBtn: 'Retry',
     memorizeHint: 'Memorize — the question appears in a moment',
+    trialLabel: 'Trial',
+    subscribed: 'Subscription active ✅',
+    trialOverTitle: 'Your trial has ended',
+    trialOverSubtitle: 'Subscribe to keep training',
+    payWithStars: 'Pay with Stars',
+    payWithCrypto: 'Pay with crypto',
+    premiumLockedNoSub: 'Requires subscription',
+    premiumBuyTitle: 'Unlock premium topics',
+    premiumBuySubtitle: 'Matrices and Speed reading — one-time, forever',
+    creatingInvoice: 'Creating invoice...',
+    passageHiddenHint: 'Read carefully — the text disappears soon',
   },
 }
 
@@ -270,6 +327,7 @@ const PALETTES = {
 const NEON = '#4D4DFF'
 const GREEN = '#22C55E'
 const RED = '#EF4444'
+const GOLD = '#FFC850'
 
 function Skeleton({ height, width, bg, style }: { height: string; width: string; bg: string; style?: React.CSSProperties }) {
   return <div className="skeleton-pulse" style={{ height, width, borderRadius: '12px', background: bg, ...style }} />
@@ -286,23 +344,23 @@ function StarField() {
   return (
     <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
       {stars.map((s) => (
-        <div
-          key={s.id}
-          className="star-twinkle"
-          style={{
-            position: 'absolute',
-            top: `${s.top}%`,
-            left: `${s.left}%`,
-            width: `${s.size}px`,
-            height: `${s.size}px`,
-            borderRadius: '50%',
-            background: '#fff',
-            animationDelay: `${s.delay}s`,
-          }}
-        />
+        <div key={s.id} className="star-twinkle" style={{
+          position: 'absolute', top: `${s.top}%`, left: `${s.left}%`, width: `${s.size}px`, height: `${s.size}px`,
+          borderRadius: '50%', background: '#fff', animationDelay: `${s.delay}s`,
+        }} />
       ))}
     </div>
   )
+}
+
+function formatTrialTime(totalSeconds: number): string {
+  const days = Math.floor(totalSeconds / 86400)
+  const hours = Math.floor((totalSeconds % 86400) / 3600)
+  if (days > 0) return `${days}д ${hours}ч`
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  if (hours > 0) return `${hours}ч ${minutes}м`
+  const seconds = totalSeconds % 60
+  return `${minutes}м ${seconds}с`
 }
 
 function App() {
@@ -316,16 +374,12 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [memoryHidden, setMemoryHidden] = useState(false)
+  const [readingHidden, setReadingHidden] = useState(false)
   const [userId, setUserId] = useState<number | null>(null)
   const [topicStats, setTopicStats] = useState<TopicStats>({
-    memory: { total: 0, correct: 0 },
-    attention: { total: 0, correct: 0 },
-    logic: { total: 0, correct: 0 },
-    math: { total: 0, correct: 0 },
-    differences: { total: 0, correct: 0 },
-    speed: { total: 0, correct: 0 },
-    colors: { total: 0, correct: 0 },
-    words: { total: 0, correct: 0 },
+    memory: { total: 0, correct: 0 }, attention: { total: 0, correct: 0 }, logic: { total: 0, correct: 0 }, math: { total: 0, correct: 0 },
+    differences: { total: 0, correct: 0 }, speed: { total: 0, correct: 0 }, colors: { total: 0, correct: 0 }, words: { total: 0, correct: 0 },
+    matrices: { total: 0, correct: 0 }, reading: { total: 0, correct: 0 },
   })
   const [userStats, setUserStats] = useState<UserStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
@@ -336,6 +390,8 @@ function App() {
   const [diffFound, setDiffFound] = useState<number[]>([])
   const [diffBoard, setDiffBoard] = useState<DiffBoard | null>(null)
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
+  const [access, setAccess] = useState<AccessStatus | null>(null)
+  const [payLoading, setPayLoading] = useState(false)
 
   const [background, setBackground] = useState<Background>(() => {
     const saved = localStorage.getItem('neyronych_background')
@@ -354,33 +410,39 @@ function App() {
   const t = I18N[lang]
   const c = background === 'white' ? PALETTES.light : PALETTES.dark
 
-  useEffect(() => {
-    localStorage.setItem('neyronych_background', background)
-  }, [background])
+  useEffect(() => { localStorage.setItem('neyronych_background', background) }, [background])
+  useEffect(() => { localStorage.setItem('neyronych_lang', lang) }, [lang])
 
-  useEffect(() => {
-    localStorage.setItem('neyronych_lang', lang)
-  }, [lang])
-
-  // Инициализация пользователя. Внутри настоящего Telegram — берём реальный id.
-  // При тесте в обычном браузере (без Telegram) подставляем "гостевой" id 0,
-  // чтобы статистика и ответы всё равно работали локально.
   useEffect(() => {
     const tg = window.Telegram?.WebApp
-    if (tg) {
-      tg.ready()
-      tg.expand()
-    }
+    if (tg) { tg.ready(); tg.expand() }
     const tgUser = tg?.initDataUnsafe?.user
     const uid = tgUser?.id ?? 0
     const uname = tgUser?.username ?? null
     setUserId(uid)
     fetch(`${API_URL}/api/user/init`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: uid, username: uname }),
-    }).catch(() => {})
+    })
+      .then(() => fetch(`${API_URL}/api/access/${uid}`))
+      .then((res) => res.json())
+      .then((data: AccessStatus) => setAccess(data))
+      .catch(() => {})
   }, [])
+
+  // тикающий отсчёт пробного периода на клиенте (без постоянного опроса сервера)
+  useEffect(() => {
+    if (!access || access.subscription_active || !access.trial_active) return
+    const id = setInterval(() => {
+      setAccess((prev) => {
+        if (!prev) return prev
+        const left = prev.trial_seconds_left - 1
+        if (left <= 0) return { ...prev, trial_seconds_left: 0, trial_active: false }
+        return { ...prev, trial_seconds_left: left }
+      })
+    }, 1000)
+    return () => clearInterval(id)
+  }, [access?.trial_active, access?.subscription_active])
 
   const haptic = (type: 'success' | 'error') => {
     const tg = window.Telegram?.WebApp
@@ -390,6 +452,45 @@ function App() {
   const cycleBackground = () => {
     const idx = BACKGROUND_ORDER.indexOf(background)
     setBackground(BACKGROUND_ORDER[(idx + 1) % BACKGROUND_ORDER.length])
+  }
+
+  const openPayLink = (url: string) => {
+    const tg = window.Telegram?.WebApp
+    if (url.startsWith('https://t.me/$') || url.includes('t.me/invoice')) {
+      tg?.openInvoice ? tg.openInvoice(url) : window.open(url, '_blank')
+    } else {
+      tg?.openLink ? tg.openLink(url) : window.open(url, '_blank')
+    }
+  }
+
+  const paySubscription = (method: 'stars' | 'crypto') => {
+    if (userId === null) return
+    setPayLoading(true)
+    fetch(`${API_URL}/api/pay/${method}/subscription`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        setPayLoading(false)
+        openPayLink(data.invoice_link || data.pay_url)
+      })
+      .catch(() => setPayLoading(false))
+  }
+
+  const payPremium = (method: 'stars' | 'crypto') => {
+    if (userId === null) return
+    setPayLoading(true)
+    fetch(`${API_URL}/api/pay/${method}/premium`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        setPayLoading(false)
+        openPayLink(data.invoice_link || data.pay_url)
+      })
+      .catch(() => setPayLoading(false))
   }
 
   // ===== Загрузка задания =====
@@ -402,6 +503,7 @@ function App() {
     setTimeLeft(null)
     setLoadError(false)
     setMemoryHidden(false)
+    setReadingHidden(false)
 
     if (topic === 'differences') {
       const board = generateDifferencesBoard(difficulty)
@@ -415,41 +517,34 @@ function App() {
       let generated: Task
       if (topic === 'speed') generated = generateSpeedTask(difficulty)
       else if (topic === 'colors') generated = generateColorsTask(difficulty, lang)
-      else generated = generateWordsTask(difficulty)
+      else if (topic === 'words') generated = generateWordsTask(difficulty)
+      else if (topic === 'matrices') generated = generateMatricesTask(difficulty)
+      else generated = generateReadingTask(difficulty)
       setTask({ ...generated, options: shuffleArray(generated.options) })
-      setTimeLeft(generated.timeLimit || null)
+      if (topic === 'reading') {
+        setTimeout(() => setReadingHidden(true), (generated.timeLimit || 6) * 1000)
+      } else {
+        setTimeLeft(generated.timeLimit || null)
+      }
       setScreen('task')
       return
     }
 
-    // memory / attention / logic / math — через backend как раньше
     setLoading(true)
     setScreen('task')
     fetch(`${API_URL}/api/task?category=${topic}&difficulty=${difficulty}`)
-      .then((res) => {
-        if (!res.ok) throw new Error('bad response')
-        return res.json()
-      })
+      .then((res) => { if (!res.ok) throw new Error('bad'); return res.json() })
       .then((data) => {
         setTask({ task_id: data.task_id, question: data.question, options: shuffleArray(JSON.parse(data.options)) })
         setLoading(false)
-        if (topic === 'memory') {
-          setTimeout(() => setMemoryHidden(true), 3000)
-        }
+        if (topic === 'memory') setTimeout(() => setMemoryHidden(true), 3000)
       })
-      .catch(() => {
-        setLoading(false)
-        setLoadError(true)
-      })
+      .catch(() => { setLoading(false); setLoadError(true) })
   }
 
-  // Таймер для Скорости / Цветов
   useEffect(() => {
     if (timeLeft === null || answerResult) return
-    if (timeLeft <= 0) {
-      submitAnswer('')
-      return
-    }
+    if (timeLeft <= 0) { submitAnswer(''); return }
     const id = setTimeout(() => setTimeLeft((v) => (v !== null ? v - 1 : null)), 1000)
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -461,35 +556,26 @@ function App() {
 
     if (CLIENT_TOPICS.includes(selectedTopic)) {
       const isCorrect = opt === task.correct
-      const result: AnswerResult = {
-        is_correct: isCorrect,
-        correct_answer: task.correct || '',
-        explanation: task.explanation || '',
-        xp_earned: isCorrect ? 10 : 0,
-      }
+      const result: AnswerResult = { is_correct: isCorrect, correct_answer: task.correct || '', explanation: task.explanation || '', xp_earned: isCorrect ? 10 : 0 }
       setAnswerResult(result)
       haptic(isCorrect ? 'success' : 'error')
       setTopicStats((prev) => {
         const topic = selectedTopic
-        const prevTopicStats = prev[topic]
-        return { ...prev, [topic]: { total: prevTopicStats.total + 1, correct: prevTopicStats.correct + (isCorrect ? 1 : 0) } }
+        const p = prev[topic]
+        return { ...prev, [topic]: { total: p.total + 1, correct: p.correct + (isCorrect ? 1 : 0) } }
       })
       if (userId !== null) {
         fetch(`${API_URL}/api/answer/client`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user_id: userId, category: selectedTopic, is_correct: isCorrect, xp_value: 10 }),
-        })
-          .then(() => { if (isCorrect) fetchTopBarStats(userId) })
-          .catch(() => {})
+        }).then(() => { if (isCorrect) fetchTopBarStats(userId) }).catch(() => {})
       }
       return
     }
 
     const uid = userId ?? 0
     fetch(`${API_URL}/api/answer`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: uid, task_id: task.task_id, answer: opt }),
     })
       .then((res) => res.json())
@@ -498,14 +584,12 @@ function App() {
         haptic(data.is_correct ? 'success' : 'error')
         setTopicStats((prev) => {
           const topic = selectedTopic
-          const prevTopicStats = prev[topic]
-          return { ...prev, [topic]: { total: prevTopicStats.total + 1, correct: prevTopicStats.correct + (data.is_correct ? 1 : 0) } }
+          const p = prev[topic]
+          return { ...prev, [topic]: { total: p.total + 1, correct: p.correct + (data.is_correct ? 1 : 0) } }
         })
         if (data.is_correct) fetchTopBarStats(uid)
       })
-      .catch(() => {
-        setAnswerResult({ is_correct: false, correct_answer: '', explanation: t.loadError, xp_earned: 0 })
-      })
+      .catch(() => setAnswerResult({ is_correct: false, correct_answer: '', explanation: t.loadError, xp_earned: 0 }))
   }
 
   const tapDiffCell = (index: number) => {
@@ -521,12 +605,9 @@ function App() {
       setTopicStats((prev) => ({ ...prev, differences: { total: prev.differences.total + 1, correct: prev.differences.correct + 1 } }))
       if (userId !== null) {
         fetch(`${API_URL}/api/answer/client`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user_id: userId, category: 'differences', is_correct: true, xp_value: xpValue }),
-        })
-          .then(() => fetchTopBarStats(userId))
-          .catch(() => {})
+        }).then(() => fetchTopBarStats(userId)).catch(() => {})
       }
     }
   }
@@ -534,11 +615,8 @@ function App() {
   const handleNext = () => {
     if (!selectedTopic || !selectedDifficulty) return
     const stats = topicStats[selectedTopic]
-    if (stats.total > 0 && stats.total % SERIES_LENGTH === 0) {
-      setScreen('summary')
-    } else {
-      loadTask(selectedTopic, selectedDifficulty)
-    }
+    if (stats.total > 0 && stats.total % SERIES_LENGTH === 0) setScreen('summary')
+    else loadTask(selectedTopic, selectedDifficulty)
   }
 
   const continueAfterSummary = () => {
@@ -547,10 +625,7 @@ function App() {
   }
 
   const fetchTopBarStats = (uid: number) => {
-    fetch(`${API_URL}/api/stats/${uid}`)
-      .then((res) => res.json())
-      .then((data: UserStats) => setUserStats(data))
-      .catch(() => {})
+    fetch(`${API_URL}/api/stats/${uid}`).then((res) => res.json()).then((data: UserStats) => setUserStats(data)).catch(() => {})
   }
 
   useEffect(() => {
@@ -560,42 +635,20 @@ function App() {
 
   const openStats = () => {
     const uid = userId ?? 0
-    setPrevScreen(screen)
-    setScreen('stats')
-    setStatsLoading(true)
-    fetch(`${API_URL}/api/stats/${uid}`)
-      .then((res) => res.json())
-      .then((data: UserStats) => {
-        setUserStats(data)
-        setStatsLoading(false)
-      })
-      .catch(() => setStatsLoading(false))
+    setPrevScreen(screen); setScreen('stats'); setStatsLoading(true)
+    fetch(`${API_URL}/api/stats/${uid}`).then((res) => res.json()).then((data: UserStats) => { setUserStats(data); setStatsLoading(false) }).catch(() => setStatsLoading(false))
   }
 
   const openAchievements = () => {
     const uid = userId ?? 0
-    setScreen('achievements')
-    setAchievementsLoading(true)
-    fetch(`${API_URL}/api/achievements/${uid}`)
-      .then((res) => res.json())
-      .then((data: { unlocked: string[] }) => {
-        setUnlockedAchievements(data.unlocked)
-        setAchievementsLoading(false)
-      })
-      .catch(() => setAchievementsLoading(false))
+    setScreen('achievements'); setAchievementsLoading(true)
+    fetch(`${API_URL}/api/achievements/${uid}`).then((res) => res.json()).then((data: { unlocked: string[] }) => { setUnlockedAchievements(data.unlocked); setAchievementsLoading(false) }).catch(() => setAchievementsLoading(false))
   }
 
   const openLeaderboard = () => {
-    setScreen('leaderboard')
-    setLeaderboardLoading(true)
+    setScreen('leaderboard'); setLeaderboardLoading(true)
     const uid = userId ?? 0
-    fetch(`${API_URL}/api/leaderboard?user_id=${uid}`)
-      .then((res) => res.json())
-      .then((data: LeaderboardData) => {
-        setLeaderboardData(data)
-        setLeaderboardLoading(false)
-      })
-      .catch(() => setLeaderboardLoading(false))
+    fetch(`${API_URL}/api/leaderboard?user_id=${uid}`).then((res) => res.json()).then((data: LeaderboardData) => { setLeaderboardData(data); setLeaderboardLoading(false) }).catch(() => setLeaderboardLoading(false))
   }
 
   const answerWarmup = (opt: string) => {
@@ -610,9 +663,8 @@ function App() {
   const proceedWarmup = () => {
     const newCorrect = warmupCorrect
     setWarmupAnswered(null)
-    if (warmupStep + 1 < WARMUP_QUESTIONS.length) {
-      setWarmupStep(warmupStep + 1)
-    } else {
+    if (warmupStep + 1 < WARMUP_QUESTIONS.length) setWarmupStep(warmupStep + 1)
+    else {
       const level: Difficulty = newCorrect === 0 ? 1 : newCorrect === 1 ? 2 : 3
       setWarmupLevel(level)
       setScreen('warmupResult')
@@ -621,17 +673,16 @@ function App() {
 
   const s = getStyles(c)
 
-  // Текст вопроса для темы "Память": прячем "запомни ..." через 3 секунды, оставляем только сам вопрос
   const getMemoryQuestionText = (): string => {
     if (!task) return ''
     if (!answerResult) {
       const parts = task.question.split('\n\n')
-      if (parts.length >= 2) {
-        return memoryHidden ? parts.slice(1).join('\n\n') : parts[0]
-      }
+      if (parts.length >= 2) return memoryHidden ? parts.slice(1).join('\n\n') : parts[0]
     }
     return task.question
   }
+
+  const isTrialBlocked = access !== null && !access.subscription_active && !access.trial_active
 
   return (
     <div style={s.page}>
@@ -675,14 +726,10 @@ function App() {
               let style = { ...s.cardAnswer }
               if (warmupAnswered !== null && isCorrectOption) style = s.cardCorrect
               else if (isSelectedWrong) style = s.cardWrong
-              return (
-                <button key={opt} style={style} disabled={warmupAnswered !== null} onClick={() => answerWarmup(opt)}>{opt}</button>
-              )
+              return <button key={opt} style={style} disabled={warmupAnswered !== null} onClick={() => answerWarmup(opt)}>{opt}</button>
             })}
           </div>
-          {warmupAnswered !== null && (
-            <button style={s.nextButton} onClick={proceedWarmup}>{t.continueBtn}</button>
-          )}
+          {warmupAnswered !== null && <button style={s.nextButton} onClick={proceedWarmup}>{t.continueBtn}</button>}
         </div>
       )}
 
@@ -705,20 +752,65 @@ function App() {
                 <span>{t.level} {userStats.level}</span>
                 <span style={{ color: c.textSecondary }}>{userStats.xp_into_level}/{userStats.xp_for_next_level} XP</span>
               </div>
-              <div style={s.levelBarTrack}>
-                <div style={{ ...s.levelBarFill, width: `${(userStats.xp_into_level / userStats.xp_for_next_level) * 100}%` }} />
-              </div>
+              <div style={s.levelBarTrack}><div style={{ ...s.levelBarFill, width: `${(userStats.xp_into_level / userStats.xp_for_next_level) * 100}%` }} /></div>
             </div>
+          )}
+          {access && (
+            access.subscription_active
+              ? <p style={{ color: GREEN, fontSize: '0.85rem', marginBottom: '1rem', position: 'relative', zIndex: 1 }}>{t.subscribed}</p>
+              : <p style={{ color: access.trial_seconds_left <= 3600 ? RED : c.textSecondary, fontSize: '0.85rem', marginBottom: '1rem', position: 'relative', zIndex: 1 }}>⏳ {t.trialLabel}: {formatTrialTime(access.trial_seconds_left)}</p>
           )}
           <p style={s.subtitle}>{t.chooseTopic}</p>
           <div style={s.gridTopics}>
             {TOPIC_KEYS.map((key) => (
-              <button key={key} style={s.card} onClick={() => { setSelectedTopic(key); setScreen('difficulty') }}>
+              <button key={key} style={s.card} onClick={() => {
+                if (isTrialBlocked) { setScreen('paywall'); return }
+                setSelectedTopic(key); setScreen('difficulty')
+              }}>
                 <div style={s.cardEmoji}>{TOPIC_EMOJI[key]}</div>
                 <div style={s.cardLabel}>{t.topics[key]}</div>
               </button>
             ))}
+            {PREMIUM_TOPIC_KEYS.map((key) => {
+              const unlocked = !!access?.subscription_active && !!access?.owns_premium_topics
+              return (
+                <div key={key} style={{ position: 'relative' }}>
+                  <button style={{ ...s.card, width: '100%', border: `0.5px solid ${GOLD}` }} onClick={() => {
+                    if (!access?.subscription_active) { setScreen('paywall'); return }
+                    if (!access?.owns_premium_topics) { setScreen('premiumPurchase'); return }
+                    setSelectedTopic(key); setScreen('difficulty')
+                  }}>
+                    <div style={s.cardEmoji}>{TOPIC_EMOJI[key]}</div>
+                    <div style={s.cardLabel}>{t.topics[key]}</div>
+                  </button>
+                  {!unlocked && (
+                    <div style={{ position: 'absolute', top: '0.4rem', right: '0.4rem', fontSize: '0.9rem' }}>💎</div>
+                  )}
+                </div>
+              )
+            })}
           </div>
+        </div>
+      )}
+
+      {screen === 'paywall' && (
+        <div className="screen-anim" style={s.welcomeWrap}>
+          <div style={s.welcomeEmoji}>⏳</div>
+          <h1 style={s.welcomeTitle}>{t.trialOverTitle}</h1>
+          <p style={s.welcomeSubtitle}>{t.trialOverSubtitle}</p>
+          <button style={s.nextButton} disabled={payLoading} onClick={() => paySubscription('stars')}>⭐ {payLoading ? t.creatingInvoice : t.payWithStars}</button>
+          <button style={{ ...s.nextButton, marginTop: '0.75rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, color: c.text }} disabled={payLoading} onClick={() => paySubscription('crypto')}>💎 {payLoading ? t.creatingInvoice : t.payWithCrypto}</button>
+        </div>
+      )}
+
+      {screen === 'premiumPurchase' && (
+        <div className="screen-anim" style={s.welcomeWrap}>
+          <div style={s.welcomeEmoji}>💎</div>
+          <h1 style={s.welcomeTitle}>{t.premiumBuyTitle}</h1>
+          <p style={s.welcomeSubtitle}>{t.premiumBuySubtitle}</p>
+          <button style={s.nextButton} disabled={payLoading} onClick={() => payPremium('stars')}>⭐ {payLoading ? t.creatingInvoice : t.payWithStars}</button>
+          <button style={{ ...s.nextButton, marginTop: '0.75rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, color: c.text }} disabled={payLoading} onClick={() => payPremium('crypto')}>💎 {payLoading ? t.creatingInvoice : t.payWithCrypto}</button>
+          <button style={s.backButtonStatic} onClick={() => setScreen('topic')}>{t.back}</button>
         </div>
       )}
 
@@ -745,28 +837,42 @@ function App() {
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${diffBoard.size}, 1fr)`, gap: '4px', maxWidth: '380px', margin: '0 auto' }}>
             {diffBoard.cells.map((emoji, i) => {
               const found = diffFound.includes(i)
-              return (
-                <button
-                  key={i}
-                  className="diff-cell"
-                  style={{ fontSize: diffBoard.size === 8 ? '1.2rem' : diffBoard.size === 10 ? '1rem' : '0.85rem', borderColor: found ? GREEN : 'transparent', background: found ? 'rgba(34,197,94,0.12)' : 'transparent' }}
-                  onClick={() => tapDiffCell(i)}
-                >
-                  {emoji}
-                </button>
-              )
+              return <button key={i} className="diff-cell" style={{ fontSize: diffBoard.size === 8 ? '1.2rem' : diffBoard.size === 10 ? '1rem' : '0.85rem', borderColor: found ? GREEN : 'transparent', background: found ? 'rgba(34,197,94,0.12)' : 'transparent' }} onClick={() => tapDiffCell(i)}>{emoji}</button>
             })}
           </div>
-          {answerResult && (
+          {answerResult && (<><p style={s.explanation}>{answerResult.explanation}</p><button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button></>)}
+        </div>
+      )}
+
+      {screen === 'task' && selectedTopic === 'reading' && task && (
+        <div className="screen-anim">
+          <button style={s.backButton} onClick={() => setScreen('difficulty')}>{t.back}</button>
+          {!readingHidden && !answerResult ? (
             <>
-              <p style={s.explanation}>{answerResult.explanation}</p>
-              <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
+              <p style={{ ...s.question, marginTop: '3rem' }}>{task.passage}</p>
+              <p style={{ fontSize: '0.78rem', color: c.textSecondary }}>{t.passageHiddenHint}</p>
+            </>
+          ) : (
+            <>
+              <p style={s.question}>{task.question}</p>
+              <div style={s.gridAnswers}>
+                {task.options.map((opt) => {
+                  const isSelected = selectedAnswer === opt
+                  const showResult = answerResult !== null
+                  const isCorrectOption = showResult && opt === answerResult.correct_answer
+                  let style = { ...s.cardAnswer }
+                  if (showResult && isSelected && !isCorrectOption) style = s.cardWrong
+                  else if (isCorrectOption) style = s.cardCorrect
+                  return <button key={opt} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
+                })}
+              </div>
+              {answerResult && (<><p style={s.explanation}>{answerResult.explanation}</p><button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button></>)}
             </>
           )}
         </div>
       )}
 
-      {screen === 'task' && selectedTopic !== 'differences' && (
+      {screen === 'task' && selectedTopic !== 'differences' && selectedTopic !== 'reading' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('difficulty')}>{t.back}</button>
           {loadError ? (
@@ -779,10 +885,8 @@ function App() {
               <Skeleton height="20px" width="80%" bg={c.skeletonBg} style={{ margin: '0 auto 12px' }} />
               <Skeleton height="20px" width="60%" bg={c.skeletonBg} style={{ margin: '0 auto 32px' }} />
               <div style={s.gridAnswers}>
-                <Skeleton height="56px" width="100%" bg={c.skeletonBg} />
-                <Skeleton height="56px" width="100%" bg={c.skeletonBg} />
-                <Skeleton height="56px" width="100%" bg={c.skeletonBg} />
-                <Skeleton height="56px" width="100%" bg={c.skeletonBg} />
+                <Skeleton height="56px" width="100%" bg={c.skeletonBg} /><Skeleton height="56px" width="100%" bg={c.skeletonBg} />
+                <Skeleton height="56px" width="100%" bg={c.skeletonBg} /><Skeleton height="56px" width="100%" bg={c.skeletonBg} />
               </div>
             </div>
           ) : (
@@ -792,9 +896,7 @@ function App() {
                   {!answerResult && timeLeft !== null ? `⏱ ${t.timeLeftLabel}: ${timeLeft}` : ''}
                 </p>
               )}
-              {task.isColorTask && (
-                <p style={{ fontSize: '0.78rem', color: c.textSecondary, marginBottom: '0.5rem' }}>{t.colorInstruction}</p>
-              )}
+              {task.isColorTask && <p style={{ fontSize: '0.78rem', color: c.textSecondary, marginBottom: '0.5rem' }}>{t.colorInstruction}</p>}
               <p style={{ ...s.question, color: task.isColorTask && !answerResult ? task.colorHex : c.text }}>
                 {selectedTopic === 'memory' ? getMemoryQuestionText() : task.question}
               </p>
@@ -810,18 +912,11 @@ function App() {
                     let style = { ...s.cardAnswer }
                     if (showResult && isSelected && !isCorrectOption) style = s.cardWrong
                     else if (isCorrectOption) style = s.cardCorrect
-                    return (
-                      <button key={opt} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
-                    )
+                    return <button key={opt} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
                   })}
                 </div>
               )}
-              {answerResult && (
-                <>
-                  <p style={s.explanation}>{answerResult.explanation}</p>
-                  <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
-                </>
-              )}
+              {answerResult && (<><p style={s.explanation}>{answerResult.explanation}</p><button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button></>)}
             </>
           )}
         </div>
@@ -845,43 +940,22 @@ function App() {
             <button style={s.linkBtn} onClick={openLeaderboard}>📈 {t.leaderboard}</button>
           </div>
           {statsLoading || !userStats ? (
-            <div style={{ maxWidth: '380px', margin: '0 auto' }}>
-              <div style={s.streakRow}>
-                <Skeleton height="76px" width="100%" bg={c.skeletonBg} />
-                <Skeleton height="76px" width="100%" bg={c.skeletonBg} />
-              </div>
-            </div>
+            <div style={{ maxWidth: '380px', margin: '0 auto' }}><div style={s.streakRow}><Skeleton height="76px" width="100%" bg={c.skeletonBg} /><Skeleton height="76px" width="100%" bg={c.skeletonBg} /></div></div>
           ) : (
             <div style={s.statsWrap}>
               <div style={s.levelBarWrap}>
-                <div style={s.levelBarLabel}>
-                  <span>{t.level} {userStats.level}</span>
-                  <span style={{ color: c.textSecondary }}>{userStats.xp_into_level}/{userStats.xp_for_next_level} XP</span>
-                </div>
-                <div style={s.levelBarTrack}>
-                  <div style={{ ...s.levelBarFill, width: `${(userStats.xp_into_level / userStats.xp_for_next_level) * 100}%` }} />
-                </div>
+                <div style={s.levelBarLabel}><span>{t.level} {userStats.level}</span><span style={{ color: c.textSecondary }}>{userStats.xp_into_level}/{userStats.xp_for_next_level} XP</span></div>
+                <div style={s.levelBarTrack}><div style={{ ...s.levelBarFill, width: `${(userStats.xp_into_level / userStats.xp_for_next_level) * 100}%` }} /></div>
               </div>
               <div style={s.streakRow}>
-                <div style={s.streakCard}>
-                  <div style={s.streakValue}>🔥 {userStats.current_streak}</div>
-                  <div style={s.streakLabel}>{t.currentStreak}</div>
-                </div>
-                <div style={s.streakCard}>
-                  <div style={s.streakValue}>🏆 {userStats.longest_streak}</div>
-                  <div style={s.streakLabel}>{t.bestStreak}</div>
-                </div>
+                <div style={s.streakCard}><div style={s.streakValue}>🔥 {userStats.current_streak}</div><div style={s.streakLabel}>{t.currentStreak}</div></div>
+                <div style={s.streakCard}><div style={s.streakValue}>🏆 {userStats.longest_streak}</div><div style={s.streakLabel}>{t.bestStreak}</div></div>
               </div>
               <p style={s.subtitle}>{t.total}: {userStats.correct} / {userStats.total} · {t.xpTotal}: {userStats.total_xp}</p>
               <div style={s.categoryList}>
-                {TOPIC_KEYS.map((key) => {
+                {[...TOPIC_KEYS, ...PREMIUM_TOPIC_KEYS].map((key) => {
                   const catStats = userStats.by_category.find((cat) => cat.category === key)
-                  return (
-                    <div key={key} style={s.categoryRow}>
-                      <span>{t.topics[key]}</span>
-                      <span style={{ color: c.textSecondary }}>{catStats?.correct || 0} / {catStats?.total || 0}</span>
-                    </div>
-                  )
+                  return <div key={key} style={s.categoryRow}><span>{t.topics[key]}</span><span style={{ color: c.textSecondary }}>{catStats?.correct || 0} / {catStats?.total || 0}</span></div>
                 })}
               </div>
             </div>
@@ -893,9 +967,7 @@ function App() {
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('stats')}>{t.back}</button>
           <h1 style={s.title}>{t.achievements}</h1>
-          {achievementsLoading ? (
-            <Skeleton height="70px" width="100%" bg={c.skeletonBg} />
-          ) : (
+          {achievementsLoading ? <Skeleton height="70px" width="100%" bg={c.skeletonBg} /> : (
             <div style={s.achievementsGrid}>
               {ACHIEVEMENTS.map((a) => {
                 const unlocked = unlockedAchievements.includes(a.id)
@@ -916,16 +988,13 @@ function App() {
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('stats')}>{t.back}</button>
           <h1 style={s.title}>{t.leaderboard}</h1>
-          {leaderboardLoading || !leaderboardData ? (
-            <Skeleton height="50px" width="100%" bg={c.skeletonBg} />
-          ) : (
+          {leaderboardLoading || !leaderboardData ? <Skeleton height="50px" width="100%" bg={c.skeletonBg} /> : (
             <div style={s.statsWrap}>
               {leaderboardData.my_rank !== null && <p style={{ ...s.subtitle, marginBottom: '1.25rem' }}>{t.yourRank}: #{leaderboardData.my_rank}</p>}
               <div style={s.categoryList}>
                 {leaderboardData.top.map((entry, idx) => (
                   <div key={entry.user_id} style={{ ...s.categoryRow, border: entry.user_id === userId ? `0.5px solid ${NEON}` : s.categoryRow.border }}>
-                    <span>#{idx + 1} {entry.username || t.anonymousPlayer}</span>
-                    <span style={{ color: c.textSecondary }}>{entry.total_xp} XP</span>
+                    <span>#{idx + 1} {entry.username || t.anonymousPlayer}</span><span style={{ color: c.textSecondary }}>{entry.total_xp} XP</span>
                   </div>
                 ))}
               </div>
@@ -950,6 +1019,7 @@ function getStyles(c: typeof PALETTES.dark): Record<string, React.CSSProperties>
     subtitle: { color: c.textSecondary, marginBottom: '2.5rem', fontSize: '0.9rem', position: 'relative', zIndex: 1 },
     question: { fontSize: '1.05rem', marginTop: '1rem', marginBottom: '2rem', whiteSpace: 'pre-line', lineHeight: 1.5, position: 'relative', zIndex: 1 },
     backButton: { position: 'absolute', top: '1.75rem', left: '1.25rem', background: 'transparent', border: 'none', color: c.textSecondary, fontSize: '0.9rem', cursor: 'pointer', zIndex: 2 },
+    backButtonStatic: { marginTop: '1.5rem', background: 'transparent', border: 'none', color: c.textSecondary, fontSize: '0.9rem', cursor: 'pointer', position: 'relative', zIndex: 1 },
     statsButton: { position: 'absolute', top: '1.75rem', left: '1.25rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, borderRadius: '10px', padding: '0.4rem 0.6rem', fontSize: '1.1rem', cursor: 'pointer', zIndex: 2 },
     levelBarWrap: { maxWidth: '380px', margin: '0 auto 1.75rem', position: 'relative', zIndex: 1 },
     levelBarLabel: { display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: '0.4rem', fontWeight: 500 },
