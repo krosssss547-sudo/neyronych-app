@@ -1,4 +1,9 @@
-from fastapi import FastAPI, HTTPException
+import os
+import hashlib
+import hmac
+import httpx
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -7,7 +12,8 @@ from database import (
     init_db, seed_tasks_if_empty, add_user_if_not_exists,
     get_random_task, get_task_by_id, save_answer, save_client_answer,
     update_streak, get_user_stats, add_xp, get_leaderboard, get_user_rank,
-    get_admin_overview
+    get_admin_overview, start_trial_if_needed, get_access_status,
+    activate_subscription, grant_premium_topics
 )
 from tasks_data import TASKS
 
@@ -22,6 +28,13 @@ app.add_middleware(
 
 XP_PER_CORRECT_ANSWER = 10
 CLIENT_TOPICS = {"differences", "speed", "colors", "words"}
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
+
+# Примерная цена в Stars (курс плавает, ~1.5₽ за звезду на май 2026 — проверяйте периодически)
+SUBSCRIPTION_STARS = 200   # ≈ 300₽
+PREMIUM_STARS = 70         # ≈ 100₽
 
 
 @app.on_event("startup")
@@ -46,6 +59,14 @@ class ClientAnswerSubmit(BaseModel):
     category: str
     is_correct: bool
     xp_value: int = XP_PER_CORRECT_ANSWER
+
+
+class PaySubscribeRequest(BaseModel):
+    user_id: int
+
+
+class PayPremiumRequest(BaseModel):
+    user_id: int
 
 
 @app.get("/")
@@ -162,3 +183,137 @@ async def admin_overview():
         <table><tr><td><b>Игрок</b></td><td><b>XP</b></td><td><b>Стрик</b></td></tr>{rows}</table>
     </body></html>
     """
+
+
+@app.get("/api/access/{user_id}")
+async def check_access(user_id: int):
+    start_trial_if_needed(user_id)
+    return get_access_status(user_id)
+
+
+# ===== Telegram Stars =====
+
+@app.post("/api/pay/stars/subscription")
+async def create_stars_subscription_invoice(payload: PaySubscribeRequest):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/createInvoiceLink",
+            json={
+                "title": "Подписка Нейроныч",
+                "description": "Доступ к премиум-темам на 30 дней",
+                "payload": f"subscription:{payload.user_id}",
+                "currency": "XTR",
+                "prices": [{"label": "Подписка на месяц", "amount": SUBSCRIPTION_STARS}],
+                "subscription_period": 2592000,
+            },
+        )
+    data = resp.json()
+    if not data.get("ok"):
+        raise HTTPException(status_code=400, detail=data.get("description", "Telegram error"))
+    return {"invoice_link": data["result"]}
+
+
+@app.post("/api/pay/stars/premium")
+async def create_stars_premium_invoice(payload: PayPremiumRequest):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/createInvoiceLink",
+            json={
+                "title": "Премиум-темы Нейроныч",
+                "description": "Матрицы и Скорочтение — навсегда (при активной подписке)",
+                "payload": f"premium:{payload.user_id}",
+                "currency": "XTR",
+                "prices": [{"label": "Премиум-темы", "amount": PREMIUM_STARS}],
+            },
+        )
+    data = resp.json()
+    if not data.get("ok"):
+        raise HTTPException(status_code=400, detail=data.get("description", "Telegram error"))
+    return {"invoice_link": data["result"]}
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request):
+    update = await request.json()
+
+    if "pre_checkout_query" in update:
+        query_id = update["pre_checkout_query"]["id"]
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/answerPreCheckoutQuery",
+                json={"pre_checkout_query_id": query_id, "ok": True},
+            )
+        return {"ok": True}
+
+    message = update.get("message", {})
+    payment = message.get("successful_payment")
+    if payment:
+        payload = payment["invoice_payload"]
+        kind, user_id_str = payload.split(":")
+        user_id = int(user_id_str)
+        if kind == "subscription":
+            activate_subscription(user_id, days=30)
+        elif kind == "premium":
+            grant_premium_topics(user_id)
+        return {"ok": True}
+
+    return {"ok": True}
+
+
+# ===== CryptoBot (крипта) =====
+
+@app.post("/api/pay/crypto/subscription")
+async def create_crypto_subscription_invoice(payload: PaySubscribeRequest):
+    return await _create_crypto_invoice(payload.user_id, "subscription", 300, "Подписка Нейроныч на 30 дней")
+
+
+@app.post("/api/pay/crypto/premium")
+async def create_crypto_premium_invoice(payload: PayPremiumRequest):
+    return await _create_crypto_invoice(payload.user_id, "premium", 100, "Премиум-темы Нейроныч")
+
+
+async def _create_crypto_invoice(user_id: int, kind: str, amount_rub: int, description: str):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://pay.crypt.bot/api/createInvoice",
+            headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN},
+            json={
+                "currency_type": "fiat",
+                "fiat": "RUB",
+                "amount": str(amount_rub),
+                "accepted_assets": "USDT,TON,BTC",
+                "description": description,
+                "payload": f"{kind}:{user_id}",
+                "expires_in": 1800,
+            },
+        )
+    data = resp.json()
+    if not data.get("ok"):
+        raise HTTPException(status_code=400, detail=data.get("error", "CryptoBot error"))
+    return {"pay_url": data["result"]["bot_invoice_url"]}
+
+
+@app.post("/api/pay/crypto/webhook")
+async def crypto_webhook(request: Request):
+    body = await request.body()
+    signature = request.headers.get("crypto-pay-api-signature", "")
+
+    check = hmac.new(
+        hashlib.sha256(CRYPTOBOT_TOKEN.encode()).digest(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(check, signature):
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    update = await request.json()
+    if update.get("update_type") == "invoice_paid":
+        invoice = update["payload"]
+        kind, user_id_str = invoice["payload"].split(":")
+        user_id = int(user_id_str)
+        if kind == "subscription":
+            activate_subscription(user_id, days=30)
+        elif kind == "premium":
+            grant_premium_topics(user_id)
+
+    return {"ok": True}

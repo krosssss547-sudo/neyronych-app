@@ -1,8 +1,9 @@
 import sqlite3
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 
 DB_NAME = "neyronych.db"
+TRIAL_DAYS = 3
 
 
 def get_conn():
@@ -66,8 +67,21 @@ def init_db():
             WHERE category IS NULL AND task_id IS NOT NULL
         """)
 
+    ensure_payment_columns(cursor)
+
     conn.commit()
     conn.close()
+
+
+def ensure_payment_columns(cursor):
+    cursor.execute("PRAGMA table_info(users)")
+    cols = [row["name"] for row in cursor.fetchall()]
+    if "trial_started_at" not in cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN trial_started_at DATETIME")
+    if "subscription_expires_at" not in cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN subscription_expires_at DATETIME")
+    if "owns_premium_topics" not in cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN owns_premium_topics INTEGER DEFAULT 0")
 
 
 def seed_tasks_if_empty(tasks: list[dict]):
@@ -288,3 +302,82 @@ def get_admin_overview():
         "total_correct": total_correct,
         "top_users": top_users,
     }
+
+
+# ===== Подписка / пробный период / премиум-темы =====
+
+def start_trial_if_needed(user_id: int):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT trial_started_at FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if row and row["trial_started_at"] is None:
+        cursor.execute(
+            "UPDATE users SET trial_started_at = ? WHERE user_id = ?",
+            (datetime.utcnow().isoformat(), user_id)
+        )
+        conn.commit()
+    conn.close()
+
+
+def get_access_status(user_id: int):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT trial_started_at, subscription_expires_at, owns_premium_topics
+        FROM users WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return {"trial_active": True, "trial_seconds_left": TRIAL_DAYS * 86400,
+                "subscription_active": False, "owns_premium_topics": False}
+
+    now = datetime.utcnow()
+
+    trial_seconds_left = 0
+    if row["trial_started_at"]:
+        started = datetime.fromisoformat(row["trial_started_at"])
+        elapsed = (now - started).total_seconds()
+        trial_seconds_left = max(0, TRIAL_DAYS * 86400 - int(elapsed))
+
+    subscription_active = False
+    if row["subscription_expires_at"]:
+        expires = datetime.fromisoformat(row["subscription_expires_at"])
+        subscription_active = expires > now
+
+    return {
+        "trial_active": trial_seconds_left > 0,
+        "trial_seconds_left": trial_seconds_left,
+        "subscription_active": subscription_active,
+        "owns_premium_topics": bool(row["owns_premium_topics"]),
+    }
+
+
+def activate_subscription(user_id: int, days: int = 30):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT subscription_expires_at FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    now = datetime.utcnow()
+    base = now
+    if row and row["subscription_expires_at"]:
+        current_expiry = datetime.fromisoformat(row["subscription_expires_at"])
+        if current_expiry > now:
+            base = current_expiry
+    new_expiry = base + timedelta(days=days)
+    cursor.execute(
+        "UPDATE users SET subscription_expires_at = ? WHERE user_id = ?",
+        (new_expiry.isoformat(), user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def grant_premium_topics(user_id: int):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET owns_premium_topics = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
