@@ -1,11 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from database import (
     init_db, seed_tasks_if_empty, add_user_if_not_exists,
     get_random_task, get_task_by_id, save_answer, save_client_answer,
-    update_streak, get_user_stats, add_xp, get_leaderboard, get_user_rank
+    update_streak, get_user_stats, add_xp, get_leaderboard, get_user_rank,
+    get_admin_overview
 )
 from tasks_data import TASKS
 
@@ -103,10 +105,6 @@ async def submit_answer(payload: AnswerSubmit):
 
 @app.post("/api/answer/client")
 async def submit_client_answer(payload: ClientAnswerSubmit):
-    """Для тем, которые генерируются и проверяются в браузере
-    (Отличия/Скорость/Цвета/Слова). Клиент сам сообщает, правильно ли ответил —
-    подсматривать тут нечего (ответ и так вычисляется на клиенте), но это
-    осознанный компромисс: технически результат можно подделать через консоль."""
     if payload.category not in CLIENT_TOPICS:
         raise HTTPException(status_code=400, detail="Unknown client topic")
 
@@ -131,3 +129,36 @@ async def leaderboard(user_id: int | None = None):
         "top": top,
         "my_rank": my_rank,
     }
+
+
+@app.get("/api/admin/overview", response_class=HTMLResponse)
+async def admin_overview():
+    s = get_admin_overview()
+    rows = "".join(
+        f"<tr><td>{u['username'] or u['user_id']}</td><td>{u['total_xp']}</td><td>{u['current_streak']}</td></tr>"
+        for u in s["top_users"]
+    )
+    return f"""
+    <html><head><meta charset="utf-8"><title>Нейроныч — статистика</title>
+    <style>
+        body {{ font-family: sans-serif; background: #0a0a12; color: #fff; padding: 2rem; }}
+        h1 {{ margin-bottom: 0.5rem; }}
+        .cards {{ display: flex; gap: 1rem; margin: 1.5rem 0; flex-wrap: wrap; }}
+        .card {{ background: #16161f; border: 1px solid #333; border-radius: 12px; padding: 1rem 1.5rem; }}
+        .card b {{ font-size: 1.5rem; display: block; }}
+        table {{ border-collapse: collapse; margin-top: 1rem; }}
+        td {{ padding: 0.5rem 1rem; border-bottom: 1px solid #333; }}
+    </style></head>
+    <body>
+        <h1>🧠 Нейроныч — статистика</h1>
+        <div class="cards">
+            <div class="card"><b>{s['total_users']}</b>Всего пользователей</div>
+            <div class="card"><b>{s['active_today']}</b>Активны сегодня</div>
+            <div class="card"><b>{s['active_7d']}</b>Активны за 7 дней</div>
+            <div class="card"><b>{s['total_answers']}</b>Всего ответов</div>
+            <div class="card"><b>{s['total_correct']}</b>Правильных ответов</div>
+        </div>
+        <h2>Топ-10 по XP</h2>
+        <table><tr><td><b>Игрок</b></td><td><b>XP</b></td><td><b>Стрик</b></td></tr>{rows}</table>
+    </body></html>
+    """

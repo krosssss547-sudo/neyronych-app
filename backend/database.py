@@ -60,15 +60,11 @@ def init_db():
     answer_columns = [row["name"] for row in cursor.fetchall()]
     if "category" not in answer_columns:
         cursor.execute("ALTER TABLE user_answers ADD COLUMN category TEXT")
-        # заполняем category для уже существующих записей через JOIN с tasks
         cursor.execute("""
             UPDATE user_answers
             SET category = (SELECT category FROM tasks WHERE tasks.task_id = user_answers.task_id)
             WHERE category IS NULL AND task_id IS NOT NULL
         """)
-    if "task_id" in answer_columns:
-        # разрешаем task_id быть NULL для клиентских тем — в SQLite это уже так по умолчанию
-        pass
 
     conn.commit()
     conn.close()
@@ -138,8 +134,6 @@ def save_answer(user_id: int, task_id: int, category: str, is_correct: bool):
 
 
 def save_client_answer(user_id: int, category: str, is_correct: bool):
-    """Для тем, которые генерируются и проверяются в браузере (Отличия/Скорость/Цвета/Слова) —
-    task_id отсутствует, т.к. задания не хранятся в таблице tasks."""
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute(
@@ -259,3 +253,38 @@ def get_user_rank(user_id: int):
     row = cursor.fetchone()
     conn.close()
     return row["rank"] if row else None
+
+
+def get_admin_overview():
+    conn = get_conn()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM users")
+    total_users = cursor.fetchone()["cnt"]
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date = date('now')")
+    active_today = cursor.fetchone()["cnt"]
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date >= date('now', '-7 days')")
+    active_7d = cursor.fetchone()["cnt"]
+
+    cursor.execute("SELECT COUNT(*) as cnt, SUM(is_correct) as correct FROM user_answers")
+    row = cursor.fetchone()
+    total_answers = row["cnt"] or 0
+    total_correct = row["correct"] or 0
+
+    cursor.execute("""
+        SELECT user_id, username, total_xp, current_streak
+        FROM users ORDER BY total_xp DESC LIMIT 10
+    """)
+    top_users = [dict(r) for r in cursor.fetchall()]
+
+    conn.close()
+    return {
+        "total_users": total_users,
+        "active_today": active_today,
+        "active_7d": active_7d,
+        "total_answers": total_answers,
+        "total_correct": total_correct,
+        "top_users": top_users,
+    }
