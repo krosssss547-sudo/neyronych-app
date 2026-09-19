@@ -6,7 +6,7 @@ declare global {
   }
 }
 
-type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard' | 'paywall' | 'premiumPurchase'
+type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard' | 'paywall' | 'premiumPurchase' | 'invite'
 type Topic = 'memory' | 'attention' | 'logic' | 'math' | 'differences' | 'speed' | 'colors' | 'words' | 'matrices' | 'reading'
 type Difficulty = 1 | 2 | 3
 type Background = 'space' | 'black' | 'white'
@@ -42,6 +42,7 @@ type AccessStatus = {
   subscription_active: boolean
   owns_premium_topics: boolean
 }
+type ReferralStats = { referrals_count: number; days_earned: number }
 
 type Achievement = {
   id: string
@@ -86,8 +87,6 @@ const WARMUP_QUESTIONS = [
   { question: { ru: 'Продолжи: 1, 1, 2, 3, 5, 8, ?', en: 'Continue: 1, 1, 2, 3, 5, 8, ?' }, options: ['11', '13', '10', '12'], correct: '13' },
 ]
 
-// ===== Утилиты =====
-
 function rand(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min
 }
@@ -100,8 +99,6 @@ function shuffleArray<T>(arr: T[]): T[] {
   }
   return a
 }
-
-// ===== Генераторы для клиентских тем =====
 
 function generateSpeedTask(difficulty: Difficulty): Task {
   let a: number, b: number, timeLimit: number
@@ -182,8 +179,6 @@ function generateDifferencesBoard(difficulty: Difficulty): DiffBoard {
   return { size, diffCount, cells, diffPositions: positions }
 }
 
-// ===== Генераторы для премиум-тем =====
-
 const MATRICES_BANK: Record<Difficulty, { question: string; options: string[]; correct: string; explanation: string }[]> = {
   1: [{ question: 'Продолжи ряд:\n🔵 🔶 🔵 🔶 🔵 ?', options: ['🔵', '🔶', '🟢', '🔺'], correct: '🔶', explanation: 'Фигуры чередуются через одну' }],
   2: [{ question: 'Найди недостающую фигуру:\n🔺🔺 🔷🔷 🔺🔺🔺 🔷🔷🔷 ?', options: ['🔺🔺🔺🔺', '🔷🔷', '🔺', '🔷🔷🔷🔷'], correct: '🔺🔺🔺🔺', explanation: 'Каждая следующая группа того же символа на 1 больше предыдущей такой же' }],
@@ -255,6 +250,14 @@ const I18N = {
     premiumBuySubtitle: 'Матрицы и Скорочтение — разово и навсегда',
     creatingInvoice: 'Создаём счёт...',
     passageHiddenHint: 'Читай внимательно — текст скоро исчезнет',
+    inviteBtn: 'Пригласить друга',
+    inviteTitle: 'Приглашай друзей',
+    inviteSubtitle: 'За каждого реально пришедшего друга — 2 дня подписки',
+    yourLink: 'Твоя ссылка',
+    copyLink: 'Скопировать',
+    copied: 'Скопировано!',
+    referralsCount: 'Друзей пришло',
+    daysEarned: 'Дней получено',
   },
   en: {
     welcomeTitle: 'Hey there, my clever friend',
@@ -302,6 +305,14 @@ const I18N = {
     premiumBuySubtitle: 'Matrices and Speed reading — one-time, forever',
     creatingInvoice: 'Creating invoice...',
     passageHiddenHint: 'Read carefully — the text disappears soon',
+    inviteBtn: 'Invite a friend',
+    inviteTitle: 'Invite your friends',
+    inviteSubtitle: 'Get 2 subscription days for every friend who joins',
+    yourLink: 'Your link',
+    copyLink: 'Copy',
+    copied: 'Copied!',
+    referralsCount: 'Friends joined',
+    daysEarned: 'Days earned',
   },
 }
 
@@ -392,6 +403,8 @@ function App() {
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
   const [access, setAccess] = useState<AccessStatus | null>(null)
   const [payLoading, setPayLoading] = useState(false)
+  const [referralStats, setReferralStats] = useState<ReferralStats | null>(null)
+  const [linkCopied, setLinkCopied] = useState(false)
 
   const [background, setBackground] = useState<Background>(() => {
     const saved = localStorage.getItem('neyronych_background')
@@ -420,9 +433,17 @@ function App() {
     const uid = tgUser?.id ?? 0
     const uname = tgUser?.username ?? null
     setUserId(uid)
+
+    const startParam: string | undefined = tg?.initDataUnsafe?.start_param
+    let referrerId: number | null = null
+    if (startParam && startParam.startsWith('ref_')) {
+      const parsed = parseInt(startParam.slice(4), 10)
+      if (!isNaN(parsed)) referrerId = parsed
+    }
+
     fetch(`${API_URL}/api/user/init`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: uid, username: uname }),
+      body: JSON.stringify({ user_id: uid, username: uname, referrer_id: referrerId }),
     })
       .then(() => fetch(`${API_URL}/api/access/${uid}`))
       .then((res) => res.json())
@@ -430,7 +451,6 @@ function App() {
       .catch(() => {})
   }, [])
 
-  // тикающий отсчёт пробного периода на клиенте (без постоянного опроса сервера)
   useEffect(() => {
     if (!access || access.subscription_active || !access.trial_active) return
     const id = setInterval(() => {
@@ -454,9 +474,25 @@ function App() {
     setBackground(BACKGROUND_ORDER[(idx + 1) % BACKGROUND_ORDER.length])
   }
 
+  const openInvite = () => {
+    setScreen('invite')
+    setLinkCopied(false)
+    const uid = userId ?? 0
+    fetch(`${API_URL}/api/referrals/${uid}`).then((res) => res.json()).then((data: ReferralStats) => setReferralStats(data)).catch(() => {})
+  }
+
+  const referralLink = `https://t.me/neyronych18_bot?startapp=ref_${userId ?? 0}`
+
+  const copyReferralLink = () => {
+    navigator.clipboard.writeText(referralLink).then(() => {
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 2000)
+    }).catch(() => {})
+  }
+
   const openPayLink = (url: string) => {
     const tg = window.Telegram?.WebApp
-    if (url.startsWith('https://t.me/$') || url.includes('t.me/invoice')) {
+    if (url.includes('t.me/invoice') || url.includes('t.me/$')) {
       tg?.openInvoice ? tg.openInvoice(url) : window.open(url, '_blank')
     } else {
       tg?.openLink ? tg.openLink(url) : window.open(url, '_blank')
@@ -471,10 +507,7 @@ function App() {
       body: JSON.stringify({ user_id: userId }),
     })
       .then((res) => res.json())
-      .then((data) => {
-        setPayLoading(false)
-        openPayLink(data.invoice_link || data.pay_url)
-      })
+      .then((data) => { setPayLoading(false); openPayLink(data.invoice_link || data.pay_url) })
       .catch(() => setPayLoading(false))
   }
 
@@ -486,14 +519,9 @@ function App() {
       body: JSON.stringify({ user_id: userId }),
     })
       .then((res) => res.json())
-      .then((data) => {
-        setPayLoading(false)
-        openPayLink(data.invoice_link || data.pay_url)
-      })
+      .then((data) => { setPayLoading(false); openPayLink(data.invoice_link || data.pay_url) })
       .catch(() => setPayLoading(false))
   }
-
-  // ===== Загрузка задания =====
 
   const loadTask = (topic: Topic, difficulty: Difficulty) => {
     setSelectedAnswer(null)
@@ -783,9 +811,7 @@ function App() {
                     <div style={s.cardEmoji}>{TOPIC_EMOJI[key]}</div>
                     <div style={s.cardLabel}>{t.topics[key]}</div>
                   </button>
-                  {!unlocked && (
-                    <div style={{ position: 'absolute', top: '0.4rem', right: '0.4rem', fontSize: '0.9rem' }}>💎</div>
-                  )}
+                  {!unlocked && <div style={{ position: 'absolute', top: '0.4rem', right: '0.4rem', fontSize: '0.9rem' }}>💎</div>}
                 </div>
               )
             })}
@@ -935,9 +961,10 @@ function App() {
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen(prevScreen)}>{t.back}</button>
           <h1 style={s.title}>{t.stats}</h1>
-          <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center', marginBottom: '1.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center', marginBottom: '1.75rem', flexWrap: 'wrap' }}>
             <button style={s.linkBtn} onClick={openAchievements}>🏅 {t.achievements}</button>
             <button style={s.linkBtn} onClick={openLeaderboard}>📈 {t.leaderboard}</button>
+            <button style={s.linkBtn} onClick={openInvite}>🎁 {t.inviteBtn}</button>
           </div>
           {statsLoading || !userStats ? (
             <div style={{ maxWidth: '380px', margin: '0 auto' }}><div style={s.streakRow}><Skeleton height="76px" width="100%" bg={c.skeletonBg} /><Skeleton height="76px" width="100%" bg={c.skeletonBg} /></div></div>
@@ -1000,6 +1027,31 @@ function App() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {screen === 'invite' && (
+        <div className="screen-anim">
+          <button style={s.backButton} onClick={() => setScreen('stats')}>{t.back}</button>
+          <h1 style={s.title}>{t.inviteTitle}</h1>
+          <p style={s.subtitle}>{t.inviteSubtitle}</p>
+          <div style={s.statsWrap}>
+            <div style={s.streakRow}>
+              <div style={s.streakCard}>
+                <div style={s.streakValue}>👥 {referralStats?.referrals_count ?? 0}</div>
+                <div style={s.streakLabel}>{t.referralsCount}</div>
+              </div>
+              <div style={s.streakCard}>
+                <div style={s.streakValue}>🎁 {referralStats?.days_earned ?? 0}</div>
+                <div style={s.streakLabel}>{t.daysEarned}</div>
+              </div>
+            </div>
+            <p style={{ fontSize: '0.8rem', color: c.textSecondary, marginBottom: '0.5rem', textAlign: 'left' }}>{t.yourLink}</p>
+            <div style={{ background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '12px', padding: '0.8rem 1rem', fontSize: '0.78rem', wordBreak: 'break-all', textAlign: 'left', marginBottom: '1rem' }}>
+              {referralLink}
+            </div>
+            <button style={s.nextButton} onClick={copyReferralLink}>{linkCopied ? `✅ ${t.copied}` : `📋 ${t.copyLink}`}</button>
+          </div>
         </div>
       )}
     </div>
