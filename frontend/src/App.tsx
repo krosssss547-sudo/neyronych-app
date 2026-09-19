@@ -42,7 +42,7 @@ type AccessStatus = {
   subscription_active: boolean
   owns_premium_topics: boolean
 }
-type ReferralStats = { referrals_count: number; days_earned: number }
+type ReferralStats = { referrals_count: number; days_earned: number; pending_count: number }
 
 type Achievement = {
   id: string
@@ -252,7 +252,8 @@ const I18N = {
     passageHiddenHint: 'Читай внимательно — текст скоро исчезнет',
     inviteBtn: 'Пригласить друга',
     inviteTitle: 'Приглашай друзей',
-    inviteSubtitle: 'За каждого реально пришедшего друга — 2 дня подписки',
+        inviteSubtitle: 'Когда приглашённый друг дойдёт до 5 уровня — получишь 2 дня подписки',
+    pendingCount: 'В процессе',
     yourLink: 'Твоя ссылка',
     copyLink: 'Скопировать',
     copied: 'Скопировано!',
@@ -307,7 +308,8 @@ const I18N = {
     passageHiddenHint: 'Read carefully — the text disappears soon',
     inviteBtn: 'Invite a friend',
     inviteTitle: 'Invite your friends',
-    inviteSubtitle: 'Get 2 subscription days for every friend who joins',
+        inviteSubtitle: 'When your invited friend reaches level 5, you get 2 subscription days',
+    pendingCount: 'In progress',
     yourLink: 'Your link',
     copyLink: 'Copy',
     copied: 'Copied!',
@@ -1036,7 +1038,7 @@ function App() {
           <h1 style={s.title}>{t.inviteTitle}</h1>
           <p style={s.subtitle}>{t.inviteSubtitle}</p>
           <div style={s.statsWrap}>
-            <div style={s.streakRow}>
+                        <div style={s.streakRow}>
               <div style={s.streakCard}>
                 <div style={s.streakValue}>👥 {referralStats?.referrals_count ?? 0}</div>
                 <div style={s.streakLabel}>{t.referralsCount}</div>
@@ -1044,6 +1046,10 @@ function App() {
               <div style={s.streakCard}>
                 <div style={s.streakValue}>🎁 {referralStats?.days_earned ?? 0}</div>
                 <div style={s.streakLabel}>{t.daysEarned}</div>
+              </div>
+              <div style={s.streakCard}>
+                <div style={s.streakValue}>⏳ {referralStats?.pending_count ?? 0}</div>
+                <div style={s.streakLabel}>{t.pendingCount}</div>
               </div>
             </div>
             <p style={{ fontSize: '0.8rem', color: c.textSecondary, marginBottom: '0.5rem', textAlign: 'left' }}>{t.yourLink}</p>

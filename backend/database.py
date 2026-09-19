@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 TRIAL_DAYS = 3
 REFERRAL_REWARD_DAYS = 2
+REFERRAL_XP_THRESHOLD = 400  # 5 уровень
 
 
 def get_conn():
@@ -67,6 +68,7 @@ def init_db():
     cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP")
     cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS owns_premium_topics INTEGER DEFAULT 0")
     cursor.execute("ALTER TABLE user_answers ADD COLUMN IF NOT EXISTS category TEXT")
+    cursor.execute("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS credited BOOLEAN DEFAULT FALSE")
 
     conn.commit()
     cursor.close()
@@ -163,6 +165,7 @@ def add_xp(user_id: int, amount: int):
     conn.commit()
     cursor.close()
     conn.close()
+    check_referral_reward(user_id)
 
 
 def update_streak(user_id: int):
@@ -391,7 +394,7 @@ def grant_premium_topics(user_id: int):
 # ===== Реферальная программа =====
 
 def register_referral(referrer_id: int, referred_id: int):
-    """Начисляет награду пригласившему — вызывается один раз, только для НОВОГО пользователя."""
+    """Сохраняет связь сразу, но НЕ начисляет награду — та придёт позже, когда друг дойдёт до 5 уровня."""
     if referrer_id == referred_id:
         return
     conn = get_conn()
@@ -400,28 +403,54 @@ def register_referral(referrer_id: int, referred_id: int):
     if cursor.fetchone() is None:
         cursor.close()
         conn.close()
-        return  # пригласивший не найден — игнорируем (например, кто-то подделал ссылку)
+        return
     try:
         cursor.execute(
-            "INSERT INTO referrals (referrer_id, referred_id, reward_days) VALUES (%s, %s, %s)",
+            "INSERT INTO referrals (referrer_id, referred_id, reward_days, credited) VALUES (%s, %s, %s, FALSE)",
             (referrer_id, referred_id, REFERRAL_REWARD_DAYS)
         )
         conn.commit()
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
-        cursor.close()
-        conn.close()
-        return  # этот пользователь уже был засчитан как реферал ранее
     cursor.close()
     conn.close()
-    activate_subscription(referrer_id, days=REFERRAL_REWARD_DAYS)
+
+
+def check_referral_reward(user_id: int):
+    """Вызывается при каждом начислении XP — проверяет, не пора ли наградить того, кто пригласил этого игрока."""
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT total_xp FROM users WHERE user_id = %s", (user_id,))
+    row = cursor.fetchone()
+    if not row or row["total_xp"] < REFERRAL_XP_THRESHOLD:
+        cursor.close()
+        conn.close()
+        return
+
+    cursor.execute(
+        "SELECT referrer_id, reward_days FROM referrals WHERE referred_id = %s AND credited = FALSE",
+        (user_id,)
+    )
+    ref = cursor.fetchone()
+    if not ref:
+        cursor.close()
+        conn.close()
+        return
+
+    cursor.execute("UPDATE referrals SET credited = TRUE WHERE referred_id = %s", (user_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    activate_subscription(ref["referrer_id"], days=ref["reward_days"])
 
 
 def get_referral_stats(user_id: int):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = %s", (user_id,))
-    count = cursor.fetchone()["cnt"]
+    cursor.execute("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = %s AND credited = TRUE", (user_id,))
+    credited = cursor.fetchone()["cnt"]
+    cursor.execute("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = %s AND credited = FALSE", (user_id,))
+    pending = cursor.fetchone()["cnt"]
     cursor.close()
     conn.close()
-    return {"referrals_count": count, "days_earned": count * REFERRAL_REWARD_DAYS}
+    return {"referrals_count": credited, "days_earned": credited * REFERRAL_REWARD_DAYS, "pending_count": pending}
