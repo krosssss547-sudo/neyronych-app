@@ -14,6 +14,19 @@ def get_conn():
     return conn
 
 
+def ensure_payment_invoices_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS payment_invoices (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            kind TEXT NOT NULL,
+            amount NUMERIC NOT NULL,
+            credited BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
 def init_db():
     conn = get_conn()
     cursor = conn.cursor()
@@ -62,6 +75,8 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    ensure_payment_invoices_table(cursor)
 
     cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_xp INTEGER DEFAULT 0")
     cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMP")
@@ -454,3 +469,38 @@ def get_referral_stats(user_id: int):
     cursor.close()
     conn.close()
     return {"referrals_count": credited, "days_earned": credited * REFERRAL_REWARD_DAYS, "pending_count": pending}
+
+
+# ===== Робокасса =====
+
+def create_payment_invoice(user_id: int, kind: str, amount: float) -> int:
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO payment_invoices (user_id, kind, amount) VALUES (%s, %s, %s) RETURNING id",
+        (user_id, kind, amount)
+    )
+    inv_id = cursor.fetchone()["id"]
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return inv_id
+
+
+def get_invoice(inv_id: int):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM payment_invoices WHERE id = %s", (inv_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return dict(row) if row else None
+
+
+def mark_invoice_credited(inv_id: int):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE payment_invoices SET credited = TRUE WHERE id = %s", (inv_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()

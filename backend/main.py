@@ -5,7 +5,7 @@ import httpx
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from database import (
@@ -13,7 +13,8 @@ from database import (
     get_random_task, get_task_by_id, save_answer, save_client_answer,
     update_streak, get_user_stats, add_xp, get_leaderboard, get_user_rank,
     get_admin_overview, start_trial_if_needed, get_access_status,
-    activate_subscription, grant_premium_topics, get_referral_stats
+    activate_subscription, grant_premium_topics, get_referral_stats,
+    create_payment_invoice, get_invoice, mark_invoice_credited
 )
 from tasks_data import TASKS
 
@@ -31,6 +32,9 @@ CLIENT_TOPICS = {"differences", "speed", "colors", "words", "matrices", "reading
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
+ROBOKASSA_LOGIN = os.environ.get("ROBOKASSA_LOGIN", "")
+ROBOKASSA_PASSWORD1 = os.environ.get("ROBOKASSA_PASSWORD1", "")
+ROBOKASSA_PASSWORD2 = os.environ.get("ROBOKASSA_PASSWORD2", "")
 
 SUBSCRIPTION_STARS = 200
 PREMIUM_STARS = 70
@@ -322,3 +326,53 @@ async def crypto_webhook(request: Request):
             grant_premium_topics(user_id)
 
     return {"ok": True}
+
+
+# ===== Робокасса =====
+
+@app.post("/api/pay/robokassa/subscription")
+async def create_robokassa_subscription(payload: PaySubscribeRequest):
+    return _create_robokassa_link(payload.user_id, "subscription", 300, "Подписка Нейроныч на 30 дней")
+
+
+@app.post("/api/pay/robokassa/premium")
+async def create_robokassa_premium(payload: PayPremiumRequest):
+    return _create_robokassa_link(payload.user_id, "premium", 100, "Премиум-темы Нейроныч")
+
+
+def _create_robokassa_link(user_id: int, kind: str, amount: int, description: str):
+    inv_id = create_payment_invoice(user_id, kind, amount)
+    out_sum = f"{amount:.2f}"
+    signature = hashlib.md5(
+        f"{ROBOKASSA_LOGIN}:{out_sum}:{inv_id}:{ROBOKASSA_PASSWORD1}".encode()
+    ).hexdigest()
+    pay_url = (
+        f"https://auth.robokassa.ru/Merchant/Index.aspx"
+        f"?MerchantLogin={ROBOKASSA_LOGIN}&OutSum={out_sum}&InvId={inv_id}"
+        f"&Description={description}&SignatureValue={signature}"
+    )
+    return {"pay_url": pay_url}
+
+
+@app.post("/api/pay/robokassa/result", response_class=PlainTextResponse)
+async def robokassa_result(request: Request):
+    form = await request.form()
+    out_sum = form.get("OutSum", "")
+    inv_id = form.get("InvId", "")
+    signature = form.get("SignatureValue", "")
+
+    check = hashlib.md5(f"{out_sum}:{inv_id}:{ROBOKASSA_PASSWORD2}".encode()).hexdigest()
+    if check.lower() != signature.lower():
+        return "bad sign"
+
+    invoice = get_invoice(int(inv_id))
+    if not invoice or invoice["credited"]:
+        return f"OK{inv_id}"
+
+    if invoice["kind"] == "subscription":
+        activate_subscription(invoice["user_id"], days=30)
+    elif invoice["kind"] == "premium":
+        grant_premium_topics(invoice["user_id"])
+
+    mark_invoice_credited(int(inv_id))
+    return f"OK{inv_id}"
