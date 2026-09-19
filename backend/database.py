@@ -1,14 +1,15 @@
-import sqlite3
+import os
 import json
+import psycopg2
+import psycopg2.extras
 from datetime import date, datetime, timedelta
 
-DB_NAME = "neyronych.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 TRIAL_DAYS = 3
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     return conn
 
 
@@ -18,19 +19,19 @@ def init_db():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            user_id BIGINT PRIMARY KEY,
             username TEXT,
             current_streak INTEGER DEFAULT 0,
             longest_streak INTEGER DEFAULT 0,
             last_active_date DATE,
             total_xp INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
-            task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id SERIAL PRIMARY KEY,
             category TEXT NOT NULL,
             difficulty INTEGER DEFAULT 1,
             question TEXT NOT NULL,
@@ -42,46 +43,25 @@ def init_db():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_answers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
             task_id INTEGER,
             category TEXT,
             is_correct BOOLEAN,
-            answered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            answered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # Миграции для существующей базы
-    cursor.execute("PRAGMA table_info(users)")
-    user_columns = [row["name"] for row in cursor.fetchall()]
-    if "total_xp" not in user_columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN total_xp INTEGER DEFAULT 0")
-
-    cursor.execute("PRAGMA table_info(user_answers)")
-    answer_columns = [row["name"] for row in cursor.fetchall()]
-    if "category" not in answer_columns:
-        cursor.execute("ALTER TABLE user_answers ADD COLUMN category TEXT")
-        cursor.execute("""
-            UPDATE user_answers
-            SET category = (SELECT category FROM tasks WHERE tasks.task_id = user_answers.task_id)
-            WHERE category IS NULL AND task_id IS NOT NULL
-        """)
-
-    ensure_payment_columns(cursor)
+    # В Postgres можно просто пытаться добавить колонку — если она уже есть, ничего не сломается
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_xp INTEGER DEFAULT 0")
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMP")
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP")
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS owns_premium_topics INTEGER DEFAULT 0")
+    cursor.execute("ALTER TABLE user_answers ADD COLUMN IF NOT EXISTS category TEXT")
 
     conn.commit()
+    cursor.close()
     conn.close()
-
-
-def ensure_payment_columns(cursor):
-    cursor.execute("PRAGMA table_info(users)")
-    cols = [row["name"] for row in cursor.fetchall()]
-    if "trial_started_at" not in cols:
-        cursor.execute("ALTER TABLE users ADD COLUMN trial_started_at DATETIME")
-    if "subscription_expires_at" not in cols:
-        cursor.execute("ALTER TABLE users ADD COLUMN subscription_expires_at DATETIME")
-    if "owns_premium_topics" not in cols:
-        cursor.execute("ALTER TABLE users ADD COLUMN owns_premium_topics INTEGER DEFAULT 0")
 
 
 def seed_tasks_if_empty(tasks: list[dict]):
@@ -93,19 +73,21 @@ def seed_tasks_if_empty(tasks: list[dict]):
         for t in tasks:
             cursor.execute("""
                 INSERT INTO tasks (category, difficulty, question, options, correct_answer, explanation)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
             """, (t["category"], t["difficulty"], t["question"], t["options"], t["correct_answer"], t["explanation"]))
         conn.commit()
+    cursor.close()
     conn.close()
 
 
 def add_user_if_not_exists(user_id: int, username: str | None):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
     if cursor.fetchone() is None:
-        cursor.execute("INSERT INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+        cursor.execute("INSERT INTO users (user_id, username) VALUES (%s, %s)", (user_id, username))
         conn.commit()
+    cursor.close()
     conn.close()
 
 
@@ -115,14 +97,15 @@ def get_random_task(category: str | None, difficulty: int | None):
     query = "SELECT * FROM tasks WHERE 1=1"
     params = []
     if category:
-        query += " AND category = ?"
+        query += " AND category = %s"
         params.append(category)
     if difficulty:
-        query += " AND difficulty = ?"
+        query += " AND difficulty = %s"
         params.append(difficulty)
     query += " ORDER BY RANDOM() LIMIT 1"
     cursor.execute(query, params)
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
     return dict(row) if row else None
 
@@ -130,8 +113,9 @@ def get_random_task(category: str | None, difficulty: int | None):
 def get_task_by_id(task_id: int):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
+    cursor.execute("SELECT * FROM tasks WHERE task_id = %s", (task_id,))
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
     return dict(row) if row else None
 
@@ -140,10 +124,11 @@ def save_answer(user_id: int, task_id: int, category: str, is_correct: bool):
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO user_answers (user_id, task_id, category, is_correct) VALUES (?, ?, ?, ?)",
+        "INSERT INTO user_answers (user_id, task_id, category, is_correct) VALUES (%s, %s, %s, %s)",
         (user_id, task_id, category, is_correct)
     )
     conn.commit()
+    cursor.close()
     conn.close()
 
 
@@ -151,38 +136,41 @@ def save_client_answer(user_id: int, category: str, is_correct: bool):
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO user_answers (user_id, task_id, category, is_correct) VALUES (?, NULL, ?, ?)",
+        "INSERT INTO user_answers (user_id, task_id, category, is_correct) VALUES (%s, NULL, %s, %s)",
         (user_id, category, is_correct)
     )
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def add_xp(user_id: int, amount: int):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET total_xp = total_xp + ? WHERE user_id = ?", (amount, user_id))
+    cursor.execute("UPDATE users SET total_xp = total_xp + %s WHERE user_id = %s", (amount, user_id))
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def update_streak(user_id: int):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT last_active_date, current_streak, longest_streak FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT last_active_date, current_streak, longest_streak FROM users WHERE user_id = %s", (user_id,))
     row = cursor.fetchone()
     if not row:
+        cursor.close()
         conn.close()
         return
 
-    last_date_str = row["last_active_date"]
+    last_date = row["last_active_date"]
     current_streak = row["current_streak"]
     longest_streak = row["longest_streak"]
     today = date.today()
 
-    if last_date_str:
-        last_date = date.fromisoformat(last_date_str)
+    if last_date:
         if last_date == today:
+            cursor.close()
             conn.close()
             return
         elif (today - last_date).days == 1:
@@ -195,10 +183,11 @@ def update_streak(user_id: int):
     longest_streak = max(longest_streak, current_streak)
 
     cursor.execute(
-        "UPDATE users SET current_streak = ?, longest_streak = ?, last_active_date = ? WHERE user_id = ?",
-        (current_streak, longest_streak, today.isoformat(), user_id)
+        "UPDATE users SET current_streak = %s, longest_streak = %s, last_active_date = %s WHERE user_id = %s",
+        (current_streak, longest_streak, today, user_id)
     )
     conn.commit()
+    cursor.close()
     conn.close()
 
 
@@ -206,23 +195,24 @@ def get_user_stats(user_id: int):
     conn = get_conn()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT current_streak, longest_streak, total_xp FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT current_streak, longest_streak, total_xp FROM users WHERE user_id = %s", (user_id,))
     user_row = cursor.fetchone()
 
     cursor.execute(
-        "SELECT COUNT(*) as total, SUM(is_correct) as correct FROM user_answers WHERE user_id = ?",
+        "SELECT COUNT(*) as total, SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) as correct FROM user_answers WHERE user_id = %s",
         (user_id,)
     )
     overall = cursor.fetchone()
 
     cursor.execute("""
-        SELECT category, COUNT(*) as total, SUM(is_correct) as correct
+        SELECT category, COUNT(*) as total, SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) as correct
         FROM user_answers
-        WHERE user_id = ? AND category IS NOT NULL
+        WHERE user_id = %s AND category IS NOT NULL
         GROUP BY category
     """, (user_id,))
     by_category = cursor.fetchall()
 
+    cursor.close()
     conn.close()
 
     total_xp = user_row["total_xp"] if user_row else 0
@@ -249,9 +239,10 @@ def get_leaderboard(limit: int = 10):
         SELECT user_id, username, total_xp, current_streak
         FROM users
         ORDER BY total_xp DESC
-        LIMIT ?
+        LIMIT %s
     """, (limit,))
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -262,9 +253,10 @@ def get_user_rank(user_id: int):
     cursor.execute("""
         SELECT COUNT(*) + 1 as rank
         FROM users
-        WHERE total_xp > (SELECT total_xp FROM users WHERE user_id = ?)
+        WHERE total_xp > (SELECT total_xp FROM users WHERE user_id = %s)
     """, (user_id,))
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
     return row["rank"] if row else None
 
@@ -276,13 +268,13 @@ def get_admin_overview():
     cursor.execute("SELECT COUNT(*) as cnt FROM users")
     total_users = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date = date('now')")
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date = CURRENT_DATE")
     active_today = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date >= date('now', '-7 days')")
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date >= CURRENT_DATE - INTERVAL '7 days'")
     active_7d = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(*) as cnt, SUM(is_correct) as correct FROM user_answers")
+    cursor.execute("SELECT COUNT(*) as cnt, SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) as correct FROM user_answers")
     row = cursor.fetchone()
     total_answers = row["cnt"] or 0
     total_correct = row["correct"] or 0
@@ -293,6 +285,7 @@ def get_admin_overview():
     """)
     top_users = [dict(r) for r in cursor.fetchall()]
 
+    cursor.close()
     conn.close()
     return {
         "total_users": total_users,
@@ -309,14 +302,15 @@ def get_admin_overview():
 def start_trial_if_needed(user_id: int):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT trial_started_at FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT trial_started_at FROM users WHERE user_id = %s", (user_id,))
     row = cursor.fetchone()
     if row and row["trial_started_at"] is None:
         cursor.execute(
-            "UPDATE users SET trial_started_at = ? WHERE user_id = ?",
-            (datetime.utcnow().isoformat(), user_id)
+            "UPDATE users SET trial_started_at = %s WHERE user_id = %s",
+            (datetime.utcnow(), user_id)
         )
         conn.commit()
+    cursor.close()
     conn.close()
 
 
@@ -325,9 +319,10 @@ def get_access_status(user_id: int):
     cursor = conn.cursor()
     cursor.execute("""
         SELECT trial_started_at, subscription_expires_at, owns_premium_topics
-        FROM users WHERE user_id = ?
+        FROM users WHERE user_id = %s
     """, (user_id,))
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
 
     if not row:
@@ -338,14 +333,12 @@ def get_access_status(user_id: int):
 
     trial_seconds_left = 0
     if row["trial_started_at"]:
-        started = datetime.fromisoformat(row["trial_started_at"])
-        elapsed = (now - started).total_seconds()
+        elapsed = (now - row["trial_started_at"]).total_seconds()
         trial_seconds_left = max(0, TRIAL_DAYS * 86400 - int(elapsed))
 
     subscription_active = False
     if row["subscription_expires_at"]:
-        expires = datetime.fromisoformat(row["subscription_expires_at"])
-        subscription_active = expires > now
+        subscription_active = row["subscription_expires_at"] > now
 
     return {
         "trial_active": trial_seconds_left > 0,
@@ -358,26 +351,26 @@ def get_access_status(user_id: int):
 def activate_subscription(user_id: int, days: int = 30):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT subscription_expires_at FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT subscription_expires_at FROM users WHERE user_id = %s", (user_id,))
     row = cursor.fetchone()
     now = datetime.utcnow()
     base = now
-    if row and row["subscription_expires_at"]:
-        current_expiry = datetime.fromisoformat(row["subscription_expires_at"])
-        if current_expiry > now:
-            base = current_expiry
+    if row and row["subscription_expires_at"] and row["subscription_expires_at"] > now:
+        base = row["subscription_expires_at"]
     new_expiry = base + timedelta(days=days)
     cursor.execute(
-        "UPDATE users SET subscription_expires_at = ? WHERE user_id = ?",
-        (new_expiry.isoformat(), user_id)
+        "UPDATE users SET subscription_expires_at = %s WHERE user_id = %s",
+        (new_expiry, user_id)
     )
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def grant_premium_topics(user_id: int):
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET owns_premium_topics = 1 WHERE user_id = ?", (user_id,))
+    cursor.execute("UPDATE users SET owns_premium_topics = 1 WHERE user_id = %s", (user_id,))
     conn.commit()
+    cursor.close()
     conn.close()
