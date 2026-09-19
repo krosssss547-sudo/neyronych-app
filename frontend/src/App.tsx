@@ -481,7 +481,7 @@ function App() {
     fetch(`${API_URL}/api/referrals/${uid}`).then((res) => res.json()).then((data: ReferralStats) => setReferralStats(data)).catch(() => {})
   }
 
-  const referralLink = `https://t.me/neyronych18_bot?startapp=ref_${userId ?? 0}`
+    const referralLink = `https://t.me/neyronych18_bot/app?startapp=ref_${userId ?? 0}`
 
   const copyReferralLink = () => {
     navigator.clipboard.writeText(referralLink).then(() => {
