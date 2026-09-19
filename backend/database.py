@@ -1,11 +1,11 @@
 import os
-import json
 import psycopg2
 import psycopg2.extras
 from datetime import date, datetime, timedelta
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 TRIAL_DAYS = 3
+REFERRAL_REWARD_DAYS = 2
 
 
 def get_conn():
@@ -52,7 +52,16 @@ def init_db():
         )
     """)
 
-    # В Postgres можно просто пытаться добавить колонку — если она уже есть, ничего не сломается
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS referrals (
+            id SERIAL PRIMARY KEY,
+            referrer_id BIGINT NOT NULL,
+            referred_id BIGINT UNIQUE NOT NULL,
+            reward_days INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_xp INTEGER DEFAULT 0")
     cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMP")
     cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP")
@@ -80,15 +89,18 @@ def seed_tasks_if_empty(tasks: list[dict]):
     conn.close()
 
 
-def add_user_if_not_exists(user_id: int, username: str | None):
+def add_user_if_not_exists(user_id: int, username: str | None, referrer_id: int | None = None):
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
-    if cursor.fetchone() is None:
+    is_new = cursor.fetchone() is None
+    if is_new:
         cursor.execute("INSERT INTO users (user_id, username) VALUES (%s, %s)", (user_id, username))
         conn.commit()
     cursor.close()
     conn.close()
+    if is_new and referrer_id:
+        register_referral(referrer_id, user_id)
 
 
 def get_random_task(category: str | None, difficulty: int | None):
@@ -374,3 +386,42 @@ def grant_premium_topics(user_id: int):
     conn.commit()
     cursor.close()
     conn.close()
+
+
+# ===== Реферальная программа =====
+
+def register_referral(referrer_id: int, referred_id: int):
+    """Начисляет награду пригласившему — вызывается один раз, только для НОВОГО пользователя."""
+    if referrer_id == referred_id:
+        return
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE user_id = %s", (referrer_id,))
+    if cursor.fetchone() is None:
+        cursor.close()
+        conn.close()
+        return  # пригласивший не найден — игнорируем (например, кто-то подделал ссылку)
+    try:
+        cursor.execute(
+            "INSERT INTO referrals (referrer_id, referred_id, reward_days) VALUES (%s, %s, %s)",
+            (referrer_id, referred_id, REFERRAL_REWARD_DAYS)
+        )
+        conn.commit()
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        cursor.close()
+        conn.close()
+        return  # этот пользователь уже был засчитан как реферал ранее
+    cursor.close()
+    conn.close()
+    activate_subscription(referrer_id, days=REFERRAL_REWARD_DAYS)
+
+
+def get_referral_stats(user_id: int):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = %s", (user_id,))
+    count = cursor.fetchone()["cnt"]
+    cursor.close()
+    conn.close()
+    return {"referrals_count": count, "days_earned": count * REFERRAL_REWARD_DAYS}

@@ -13,7 +13,7 @@ from database import (
     get_random_task, get_task_by_id, save_answer, save_client_answer,
     update_streak, get_user_stats, add_xp, get_leaderboard, get_user_rank,
     get_admin_overview, start_trial_if_needed, get_access_status,
-    activate_subscription, grant_premium_topics
+    activate_subscription, grant_premium_topics, get_referral_stats
 )
 from tasks_data import TASKS
 
@@ -27,14 +27,13 @@ app.add_middleware(
 )
 
 XP_PER_CORRECT_ANSWER = 10
-CLIENT_TOPICS = {"differences", "speed", "colors", "words"}
+CLIENT_TOPICS = {"differences", "speed", "colors", "words", "matrices", "reading"}
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
 
-# Примерная цена в Stars (курс плавает, ~1.5₽ за звезду на май 2026 — проверяйте периодически)
-SUBSCRIPTION_STARS = 200   # ≈ 300₽
-PREMIUM_STARS = 70         # ≈ 100₽
+SUBSCRIPTION_STARS = 200
+PREMIUM_STARS = 70
 
 
 @app.on_event("startup")
@@ -46,6 +45,7 @@ async def startup():
 class UserInit(BaseModel):
     user_id: int
     username: str | None = None
+    referrer_id: int | None = None
 
 
 class AnswerSubmit(BaseModel):
@@ -81,7 +81,7 @@ async def ping():
 
 @app.post("/api/user/init")
 async def init_user(payload: UserInit):
-    add_user_if_not_exists(payload.user_id, payload.username)
+    add_user_if_not_exists(payload.user_id, payload.username, payload.referrer_id)
     return {"ok": True}
 
 
@@ -189,6 +189,11 @@ async def admin_overview():
 async def check_access(user_id: int):
     start_trial_if_needed(user_id)
     return get_access_status(user_id)
+
+
+@app.get("/api/referrals/{user_id}")
+async def referrals(user_id: int):
+    return get_referral_stats(user_id)
 
 
 # ===== Telegram Stars =====
