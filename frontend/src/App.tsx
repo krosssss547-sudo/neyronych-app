@@ -252,13 +252,13 @@ const I18N = {
     passageHiddenHint: 'Читай внимательно — текст скоро исчезнет',
     inviteBtn: 'Пригласить друга',
     inviteTitle: 'Приглашай друзей',
-        inviteSubtitle: 'Когда приглашённый друг дойдёт до 5 уровня — получишь 2 дня подписки',
-    pendingCount: 'В процессе',
+    inviteSubtitle: 'Когда приглашённый друг дойдёт до 5 уровня — получишь 2 дня подписки',
     yourLink: 'Твоя ссылка',
     copyLink: 'Скопировать',
     copied: 'Скопировано!',
     referralsCount: 'Друзей пришло',
     daysEarned: 'Дней получено',
+    pendingCount: 'В процессе',
   },
   en: {
     welcomeTitle: 'Hey there, my clever friend',
@@ -308,13 +308,13 @@ const I18N = {
     passageHiddenHint: 'Read carefully — the text disappears soon',
     inviteBtn: 'Invite a friend',
     inviteTitle: 'Invite your friends',
-        inviteSubtitle: 'When your invited friend reaches level 5, you get 2 subscription days',
-    pendingCount: 'In progress',
+    inviteSubtitle: 'When your invited friend reaches level 5, you get 2 subscription days',
     yourLink: 'Your link',
     copyLink: 'Copy',
     copied: 'Copied!',
     referralsCount: 'Friends joined',
     daysEarned: 'Days earned',
+    pendingCount: 'In progress',
   },
 }
 
@@ -362,6 +362,31 @@ function StarField() {
           borderRadius: '50%', background: '#fff', animationDelay: `${s.delay}s`,
         }} />
       ))}
+    </div>
+  )
+}
+
+function CelebrateFX({ xp }: { xp: number }) {
+  const colors = ['#4D4DFF', '#22C55E', '#FFC850', '#EF4444', '#3B82F6']
+  const dots = Array.from({ length: 14 }, (_, i) => {
+    const angle = (Math.PI * 2 * i) / 14
+    const dist = 50 + Math.random() * 30
+    return {
+      id: i,
+      color: colors[i % colors.length],
+      dx: Math.cos(angle) * dist,
+      dy: Math.sin(angle) * dist,
+      delay: Math.random() * 0.1,
+    }
+  })
+  return (
+    <div style={{ position: 'relative', height: 0 }}>
+      <div style={{ position: 'absolute', left: '50%', top: '-20px', transform: 'translateX(-50%)' }}>
+        {dots.map((d) => (
+          <span key={d.id} className="confetti-dot" style={{ background: d.color, left: 0, top: 0, animationDelay: `${d.delay}s`, ['--dx' as any]: `${d.dx}px`, ['--dy' as any]: `${d.dy}px` }} />
+        ))}
+        <div className="xp-fly" style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', color: '#FFC850', fontWeight: 700, fontSize: '1.1rem', whiteSpace: 'nowrap' }}>+{xp} XP</div>
+      </div>
     </div>
   )
 }
@@ -483,7 +508,7 @@ function App() {
     fetch(`${API_URL}/api/referrals/${uid}`).then((res) => res.json()).then((data: ReferralStats) => setReferralStats(data)).catch(() => {})
   }
 
-    const referralLink = `https://t.me/neyronych18_bot/app?startapp=ref_${userId ?? 0}`
+  const referralLink = `https://t.me/neyronych18_bot/app?startapp=ref_${userId ?? 0}`
 
   const copyReferralLink = () => {
     navigator.clipboard.writeText(referralLink).then(() => {
@@ -724,6 +749,14 @@ function App() {
         @keyframes twinkle { 0%, 100% { opacity: 0.2; } 50% { opacity: 1; } }
         .star-twinkle { animation: twinkle 3s ease-in-out infinite; }
         .diff-cell { aspect-ratio: 1; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 2px solid transparent; background: transparent; padding: 0; }
+        @keyframes correctPop { 0% { transform: scale(1); } 40% { transform: scale(1.06); } 100% { transform: scale(1); } }
+        .correct-pop { animation: correctPop 0.35s ease-out; }
+        @keyframes wrongShake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+        .wrong-shake { animation: wrongShake 0.3s ease-in-out; }
+        @keyframes xpFly { 0% { transform: translateY(0); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(-40px); opacity: 0; } }
+        .xp-fly { animation: xpFly 1s ease-out forwards; }
+        @keyframes confettiBurst { 0% { transform: translate(0,0) scale(1); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) scale(0); opacity: 0; } }
+        .confetti-dot { position: absolute; width: 7px; height: 7px; border-radius: 50%; animation: confettiBurst 0.6s ease-out forwards; }
       `}</style>
 
       {background === 'space' && <StarField />}
@@ -868,7 +901,13 @@ function App() {
               return <button key={i} className="diff-cell" style={{ fontSize: diffBoard.size === 8 ? '1.2rem' : diffBoard.size === 10 ? '1rem' : '0.85rem', borderColor: found ? GREEN : 'transparent', background: found ? 'rgba(34,197,94,0.12)' : 'transparent' }} onClick={() => tapDiffCell(i)}>{emoji}</button>
             })}
           </div>
-          {answerResult && (<><p style={s.explanation}>{answerResult.explanation}</p><button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button></>)}
+          {answerResult && (
+            <>
+              {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
+              <p style={s.explanation}>{answerResult.explanation}</p>
+              <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
+            </>
+          )}
         </div>
       )}
 
@@ -889,12 +928,19 @@ function App() {
                   const showResult = answerResult !== null
                   const isCorrectOption = showResult && opt === answerResult.correct_answer
                   let style = { ...s.cardAnswer }
-                  if (showResult && isSelected && !isCorrectOption) style = s.cardWrong
-                  else if (isCorrectOption) style = s.cardCorrect
-                  return <button key={opt} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
+                  let cls = ''
+                  if (showResult && isSelected && !isCorrectOption) { style = s.cardWrong; cls = 'wrong-shake' }
+                  else if (isCorrectOption) { style = s.cardCorrect; cls = 'correct-pop' }
+                  return <button key={opt} className={cls} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
                 })}
               </div>
-              {answerResult && (<><p style={s.explanation}>{answerResult.explanation}</p><button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button></>)}
+              {answerResult && (
+                <>
+                  {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
+                  <p style={s.explanation}>{answerResult.explanation}</p>
+                  <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -938,13 +984,20 @@ function App() {
                     const showResult = answerResult !== null
                     const isCorrectOption = showResult && opt === answerResult.correct_answer
                     let style = { ...s.cardAnswer }
-                    if (showResult && isSelected && !isCorrectOption) style = s.cardWrong
-                    else if (isCorrectOption) style = s.cardCorrect
-                    return <button key={opt} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
+                    let cls = ''
+                    if (showResult && isSelected && !isCorrectOption) { style = s.cardWrong; cls = 'wrong-shake' }
+                    else if (isCorrectOption) { style = s.cardCorrect; cls = 'correct-pop' }
+                    return <button key={opt} className={cls} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
                   })}
                 </div>
               )}
-              {answerResult && (<><p style={s.explanation}>{answerResult.explanation}</p><button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button></>)}
+              {answerResult && (
+                <>
+                  {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
+                  <p style={s.explanation}>{answerResult.explanation}</p>
+                  <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -1038,7 +1091,7 @@ function App() {
           <h1 style={s.title}>{t.inviteTitle}</h1>
           <p style={s.subtitle}>{t.inviteSubtitle}</p>
           <div style={s.statsWrap}>
-                        <div style={s.streakRow}>
+            <div style={s.streakRow}>
               <div style={s.streakCard}>
                 <div style={s.streakValue}>👥 {referralStats?.referrals_count ?? 0}</div>
                 <div style={s.streakLabel}>{t.referralsCount}</div>
