@@ -36,7 +36,7 @@ ROBOKASSA_LOGIN = os.environ.get("ROBOKASSA_LOGIN", "")
 ROBOKASSA_PASSWORD1 = os.environ.get("ROBOKASSA_PASSWORD1", "")
 ROBOKASSA_PASSWORD2 = os.environ.get("ROBOKASSA_PASSWORD2", "")
 
-SUBSCRIPTION_STARS = 200
+SUBSCRIPTION_STARS = 100
 PREMIUM_STARS = 70
 
 
@@ -273,7 +273,7 @@ async def telegram_webhook(request: Request):
 
 @app.post("/api/pay/crypto/subscription")
 async def create_crypto_subscription_invoice(payload: PaySubscribeRequest):
-    return await _create_crypto_invoice(payload.user_id, "subscription", 300, "Подписка Нейроныч на 30 дней")
+    return await _create_crypto_invoice(payload.user_id, "subscription", 150, "Подписка Нейроныч на 30 дней")
 
 
 @app.post("/api/pay/crypto/premium")
@@ -332,7 +332,7 @@ async def crypto_webhook(request: Request):
 
 @app.post("/api/pay/robokassa/subscription")
 async def create_robokassa_subscription(payload: PaySubscribeRequest):
-    return _create_robokassa_link(payload.user_id, "subscription", 300, "Подписка Нейроныч на 30 дней")
+    return _create_robokassa_link(payload.user_id, "subscription", 150, "Подписка Нейроныч на 30 дней")
 
 
 @app.post("/api/pay/robokassa/premium")
