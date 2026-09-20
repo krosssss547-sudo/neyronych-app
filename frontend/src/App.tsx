@@ -1,18 +1,18 @@
 import { useEffect, useState } from 'react'
 import Brain3D from './Brain3D'
-
+ 
 declare global {
   interface Window {
     Telegram: any
   }
 }
-
+ 
 type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard' | 'paywall' | 'premiumPurchase' | 'invite'
 type Topic = 'memory' | 'attention' | 'logic' | 'math' | 'differences' | 'speed' | 'colors' | 'words' | 'matrices' | 'reading'
 type Difficulty = 1 | 2 | 3
 type Background = 'space' | 'black' | 'white'
 type Lang = 'ru' | 'en'
-
+ 
 type Task = {
   task_id: number | string
   question: string
@@ -44,17 +44,17 @@ type AccessStatus = {
   owns_premium_topics: boolean
 }
 type ReferralStats = { referrals_count: number; days_earned: number; pending_count: number }
-
+ 
 type Achievement = {
   id: string
   emoji: string
   title: { ru: string; en: string }
   description: { ru: string; en: string }
 }
-
+ 
 type LeaderboardEntry = { user_id: number; username: string | null; total_xp: number; current_streak: number }
 type LeaderboardData = { top: LeaderboardEntry[]; my_rank: number | null }
-
+ 
 const ACHIEVEMENTS: Achievement[] = [
   { id: 'streak_5', emoji: '🔥', title: { ru: '5 дней подряд', en: '5-day streak' }, description: { ru: 'Держи стрик 5 дней', en: 'Keep a 5-day streak' } },
   { id: 'streak_10', emoji: '🔥', title: { ru: '10 дней подряд', en: '10-day streak' }, description: { ru: 'Держи стрик 10 дней', en: 'Keep a 10-day streak' } },
@@ -66,7 +66,7 @@ const ACHIEVEMENTS: Achievement[] = [
   { id: 'level_10', emoji: '⭐', title: { ru: '10 уровень', en: 'Level 10' }, description: { ru: 'Достигни 10 уровня', en: 'Reach level 10' } },
   { id: 'category_master', emoji: '🏅', title: { ru: 'Мастер темы', en: 'Topic master' }, description: { ru: '20 правильных в одной теме', en: '20 correct in one topic' } },
 ]
-
+ 
 const TOPIC_KEYS: Topic[] = ['memory', 'attention', 'logic', 'math', 'differences', 'speed', 'colors', 'words']
 const PREMIUM_TOPIC_KEYS: Topic[] = ['matrices', 'reading']
 const CLIENT_TOPICS: Topic[] = ['differences', 'speed', 'colors', 'words', 'matrices', 'reading']
@@ -80,18 +80,65 @@ const DIFFICULTY_EMOJI: Record<Difficulty, string> = { 1: '🟢', 2: '🟡', 3: 
 const BACKGROUND_ORDER: Background[] = ['space', 'black', 'white']
 const BACKGROUND_ICON: Record<Background, string> = { space: '🌌', black: '⚫', white: '⚪' }
 const SERIES_LENGTH = 5
-
+ 
 const API_URL = 'https://neyronych-app.onrender.com'
-
-const WARMUP_QUESTIONS = [
-  { question: { ru: '17 × 6 = ?', en: '17 × 6 = ?' }, options: ['96', '102', '112', '108'], correct: '102' },
-  { question: { ru: 'Продолжи: 1, 1, 2, 3, 5, 8, ?', en: 'Continue: 1, 1, 2, 3, 5, 8, ?' }, options: ['11', '13', '10', '12'], correct: '13' },
-]
-
+ 
+type WarmupQuestion = { question: { ru: string; en: string }; options: string[]; correct: string }
+ 
+function makeWarmupOptions(correct: number): string[] {
+  const set = new Set<number>([correct])
+  while (set.size < 4) {
+    const v = correct + rand(1, 10) * (Math.random() < 0.5 ? -1 : 1)
+    if (v > 0) set.add(v)
+  }
+  return shuffleArray(Array.from(set).map(String))
+}
+ 
+function generateWarmupMath(): WarmupQuestion {
+  let text: string
+  let correct: number
+  if (rand(0, 1) === 0) {
+    const a = rand(12, 19), b = rand(3, 9)
+    text = `${a} × ${b} = ?`
+    correct = a * b
+  } else {
+    const a = rand(30, 90), b = rand(11, 29), c = rand(5, 19)
+    text = `${a} + ${b} − ${c} = ?`
+    correct = a + b - c
+  }
+  return { question: { ru: text, en: text }, options: makeWarmupOptions(correct), correct: String(correct) }
+}
+ 
+function generateWarmupSequence(): WarmupQuestion {
+  const type = rand(0, 2)
+  let seq: number[]
+  if (type === 0) {
+    const start = rand(2, 20), step = rand(2, 9)
+    seq = Array.from({ length: 7 }, (_, i) => start + step * i)
+  } else if (type === 1) {
+    const start = rand(1, 4), mult = rand(2, 3)
+    seq = Array.from({ length: 6 }, (_, i) => start * mult ** i)
+  } else {
+    seq = [rand(1, 3), rand(1, 4)]
+    while (seq.length < 7) seq.push(seq[seq.length - 1] + seq[seq.length - 2])
+  }
+  const correct = seq[seq.length - 1]
+  const shown = seq.slice(0, -1).join(', ')
+  return {
+    question: { ru: `Продолжи: ${shown}, ?`, en: `Continue: ${shown}, ?` },
+    options: makeWarmupOptions(correct),
+    correct: String(correct),
+  }
+}
+ 
+function generateWarmupQuestions(): WarmupQuestion[] {
+  return [generateWarmupMath(), generateWarmupSequence()]
+}
+ 
 function rand(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min
 }
-
+ 
 function shuffleArray<T>(arr: T[]): T[] {
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {
@@ -100,7 +147,7 @@ function shuffleArray<T>(arr: T[]): T[] {
   }
   return a
 }
-
+ 
 function generateSpeedTask(difficulty: Difficulty): Task {
   let a: number, b: number, timeLimit: number
   if (difficulty === 1) { a = rand(2, 9); b = rand(2, 9); timeLimit = 8 }
@@ -111,14 +158,14 @@ function generateSpeedTask(difficulty: Difficulty): Task {
   const options = shuffleArray([String(correct), ...wrongPool.map(String)])
   return { task_id: 'speed-' + Date.now(), question: `${a} × ${b} = ?`, options, correct: String(correct), explanation: `${a} × ${b} = ${correct}`, timeLimit }
 }
-
+ 
 const COLOR_WORDS = [
   { name: { ru: 'Красный', en: 'Red' }, hex: '#EF4444' },
   { name: { ru: 'Синий', en: 'Blue' }, hex: '#3B82F6' },
   { name: { ru: 'Зелёный', en: 'Green' }, hex: '#22C55E' },
   { name: { ru: 'Жёлтый', en: 'Yellow' }, hex: '#EAB308' },
 ]
-
+ 
 function generateColorsTask(difficulty: Difficulty, lang: Lang): Task {
   const wordObj = COLOR_WORDS[rand(0, COLOR_WORDS.length - 1)]
   let colorObj = COLOR_WORDS[rand(0, COLOR_WORDS.length - 1)]
@@ -132,13 +179,13 @@ function generateColorsTask(difficulty: Difficulty, lang: Lang): Task {
     timeLimit, isColorTask: true, colorHex: colorObj.hex,
   }
 }
-
+ 
 const WORD_BANK: Record<Difficulty, string[]> = {
   1: ['корзина', 'дорога', 'салфетка', 'котёнок', 'подушка', 'ромашка'],
   2: ['библиотека', 'автомобиль', 'коллекция', 'ландшафт', 'учреждение', 'впечатление'],
   3: ['приключение', 'удивительный', 'путешествие', 'воображение', 'самостоятельный', 'преодоление'],
 }
-
+ 
 function similarDecoy(word: string, existing: string[]): string {
   let attempt = word
   let tries = 0
@@ -153,7 +200,7 @@ function similarDecoy(word: string, existing: string[]): string {
   } while ((attempt === word || existing.includes(attempt)) && tries < 20)
   return attempt
 }
-
+ 
 function generateWordsTask(difficulty: Difficulty): Task {
   const words = WORD_BANK[difficulty]
   const word = words[rand(0, words.length - 1)]
@@ -163,9 +210,9 @@ function generateWordsTask(difficulty: Difficulty): Task {
   const options = shuffleArray([word, ...decoys])
   return { task_id: 'word-' + Date.now(), question: `Собери слово: ${scrambled.toUpperCase()}`, options, correct: word, explanation: `Слово: ${word}` }
 }
-
+ 
 type DiffBoard = { size: number; diffCount: number; cells: string[]; diffPositions: Set<number> }
-
+ 
 function generateDifferencesBoard(difficulty: Difficulty): DiffBoard {
   const size = difficulty === 1 ? 8 : difficulty === 2 ? 10 : 12
   const diffCount = difficulty === 1 ? 5 : difficulty === 2 ? 10 : 15
@@ -179,31 +226,31 @@ function generateDifferencesBoard(difficulty: Difficulty): DiffBoard {
   const cells = Array.from({ length: totalCells }, (_, i) => (positions.has(i) ? diff : base))
   return { size, diffCount, cells, diffPositions: positions }
 }
-
+ 
 const MATRICES_BANK: Record<Difficulty, { question: string; options: string[]; correct: string; explanation: string }[]> = {
   1: [{ question: 'Продолжи ряд:\n🔵 🔶 🔵 🔶 🔵 ?', options: ['🔵', '🔶', '🟢', '🔺'], correct: '🔶', explanation: 'Фигуры чередуются через одну' }],
   2: [{ question: 'Найди недостающую фигуру:\n🔺🔺 🔷🔷 🔺🔺🔺 🔷🔷🔷 ?', options: ['🔺🔺🔺🔺', '🔷🔷', '🔺', '🔷🔷🔷🔷'], correct: '🔺🔺🔺🔺', explanation: 'Каждая следующая группа того же символа на 1 больше предыдущей такой же' }],
   3: [{ question: 'Закономерность: 🔵→🔵🔵→🔵🔵🔵🔵→🔵🔵🔵🔵🔵🔵🔵🔵\n\nСколько будет дальше?', options: ['12', '16', '10', '9'], correct: '16', explanation: 'Каждый раз количество удваивается: 1,2,4,8,16' }],
 }
-
+ 
 function generateMatricesTask(difficulty: Difficulty): Task {
   const pool = MATRICES_BANK[difficulty]
   const picked = pool[rand(0, pool.length - 1)]
   return { task_id: 'matrix-' + Date.now(), ...picked }
 }
-
+ 
 const READING_BANK: Record<Difficulty, { passage: string; question: string; options: string[]; correct: string; explanation: string; readSeconds: number }[]> = {
   1: [{ passage: 'Кот сидел на подоконнике и смотрел на дождь за окном. На улице было холодно, и он был рад, что находится дома в тепле.', question: 'Где сидел кот?', options: ['На диване', 'На подоконнике', 'В коробке', 'На столе'], correct: 'На подоконнике', explanation: 'В тексте прямо сказано: "сидел на подоконнике"', readSeconds: 8 }],
   2: [{ passage: 'Экспедиция вышла на рассвете, чтобы успеть пересечь перевал до полудня, когда в горах обычно начинается сильный ветер и видимость резко падает.', question: 'Почему экспедиция вышла на рассвете?', options: ['Чтобы успеть пересечь перевал до ветра', 'Чтобы увидеть рассвет', 'Потому что так короче путь', 'Из-за холода ночью'], correct: 'Чтобы успеть пересечь перевал до ветра', explanation: 'Цель — пересечь перевал до полуденного ветра', readSeconds: 6 }],
   3: [{ passage: 'Несмотря на то что первоначальный план предполагал запуск проекта в марте, команда приняла решение перенести дату на два месяца вперёд из-за задержек с поставкой оборудования.', question: 'На сколько месяцев перенесли запуск?', options: ['На один', 'На два', 'На три', 'Не перенесли'], correct: 'На два', explanation: 'В тексте: "перенести дату на два месяца вперёд"', readSeconds: 5 }],
 }
-
+ 
 function generateReadingTask(difficulty: Difficulty): Task {
   const pool = READING_BANK[difficulty]
   const picked = pool[rand(0, pool.length - 1)]
   return { task_id: 'reading-' + Date.now(), question: picked.question, options: picked.options, correct: picked.correct, explanation: picked.explanation, passage: picked.passage, timeLimit: picked.readSeconds }
 }
-
+ 
 const I18N = {
   ru: {
     welcomeTitle: 'Приветствую, мой мозговитый друг',
@@ -318,7 +365,7 @@ const I18N = {
     pendingCount: 'In progress',
   },
 }
-
+ 
 const PALETTES = {
   dark: {
     bg: '#0a0a12',
@@ -337,16 +384,16 @@ const PALETTES = {
     skeletonBg: 'rgba(10,10,18,0.06)',
   },
 }
-
+ 
 const NEON = '#4D4DFF'
 const GREEN = '#22C55E'
 const RED = '#EF4444'
 const GOLD = '#FFC850'
-
+ 
 function Skeleton({ height, width, bg, style }: { height: string; width: string; bg: string; style?: React.CSSProperties }) {
   return <div className="skeleton-pulse" style={{ height, width, borderRadius: '12px', background: bg, ...style }} />
 }
-
+ 
 function StarField() {
   const stars = Array.from({ length: 60 }, (_, i) => ({
     id: i,
@@ -366,7 +413,7 @@ function StarField() {
     </div>
   )
 }
-
+ 
 function CelebrateFX({ xp }: { xp: number }) {
   const colors = ['#4D4DFF', '#22C55E', '#FFC850', '#EF4444', '#3B82F6']
   const dots = Array.from({ length: 14 }, (_, i) => {
@@ -391,7 +438,7 @@ function CelebrateFX({ xp }: { xp: number }) {
     </div>
   )
 }
-
+ 
 function formatTrialTime(totalSeconds: number): string {
   const days = Math.floor(totalSeconds / 86400)
   const hours = Math.floor((totalSeconds % 86400) / 3600)
@@ -401,7 +448,7 @@ function formatTrialTime(totalSeconds: number): string {
   const seconds = totalSeconds % 60
   return `${minutes}м ${seconds}с`
 }
-
+ 
 function App() {
   const [screen, setScreen] = useState<Screen>('welcome')
   const [prevScreen, setPrevScreen] = useState<Screen>('topic')
@@ -433,7 +480,7 @@ function App() {
   const [payLoading, setPayLoading] = useState(false)
   const [referralStats, setReferralStats] = useState<ReferralStats | null>(null)
   const [linkCopied, setLinkCopied] = useState(false)
-
+ 
   const [background, setBackground] = useState<Background>(() => {
     const saved = localStorage.getItem('neyronych_background')
     return saved === 'space' || saved === 'black' || saved === 'white' ? saved : 'space'
@@ -442,18 +489,19 @@ function App() {
     const saved = localStorage.getItem('neyronych_lang')
     return saved === 'ru' || saved === 'en' ? saved : 'ru'
   })
-
+ 
   const [warmupStep, setWarmupStep] = useState(0)
   const [warmupCorrect, setWarmupCorrect] = useState(0)
   const [warmupLevel, setWarmupLevel] = useState<Difficulty>(2)
   const [warmupAnswered, setWarmupAnswered] = useState<string | null>(null)
-
+  const [warmupQuestions] = useState<WarmupQuestion[]>(generateWarmupQuestions)
+ 
   const t = I18N[lang]
   const c = background === 'white' ? PALETTES.light : PALETTES.dark
-
+ 
   useEffect(() => { localStorage.setItem('neyronych_background', background) }, [background])
   useEffect(() => { localStorage.setItem('neyronych_lang', lang) }, [lang])
-
+ 
   useEffect(() => {
     const tg = window.Telegram?.WebApp
     if (tg) { tg.ready(); tg.expand() }
@@ -461,14 +509,14 @@ function App() {
     const uid = tgUser?.id ?? 0
     const uname = tgUser?.username ?? null
     setUserId(uid)
-
+ 
     const startParam: string | undefined = tg?.initDataUnsafe?.start_param
     let referrerId: number | null = null
     if (startParam && startParam.startsWith('ref_')) {
       const parsed = parseInt(startParam.slice(4), 10)
       if (!isNaN(parsed)) referrerId = parsed
     }
-
+ 
     fetch(`${API_URL}/api/user/init`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: uid, username: uname, referrer_id: referrerId }),
@@ -478,7 +526,7 @@ function App() {
       .then((data: AccessStatus) => setAccess(data))
       .catch(() => {})
   }, [])
-
+ 
   useEffect(() => {
     if (!access || access.subscription_active || !access.trial_active) return
     const id = setInterval(() => {
@@ -491,33 +539,33 @@ function App() {
     }, 1000)
     return () => clearInterval(id)
   }, [access?.trial_active, access?.subscription_active])
-
+ 
   const haptic = (type: 'success' | 'error') => {
     const tg = window.Telegram?.WebApp
     tg?.HapticFeedback?.notificationOccurred(type)
   }
-
+ 
   const cycleBackground = () => {
     const idx = BACKGROUND_ORDER.indexOf(background)
     setBackground(BACKGROUND_ORDER[(idx + 1) % BACKGROUND_ORDER.length])
   }
-
+ 
   const openInvite = () => {
     setScreen('invite')
     setLinkCopied(false)
     const uid = userId ?? 0
     fetch(`${API_URL}/api/referrals/${uid}`).then((res) => res.json()).then((data: ReferralStats) => setReferralStats(data)).catch(() => {})
   }
-
+ 
   const referralLink = `https://t.me/neyronych18_bot/app?startapp=ref_${userId ?? 0}`
-
+ 
   const copyReferralLink = () => {
     navigator.clipboard.writeText(referralLink).then(() => {
       setLinkCopied(true)
       setTimeout(() => setLinkCopied(false), 2000)
     }).catch(() => {})
   }
-
+ 
   const openPayLink = (url: string) => {
     const tg = window.Telegram?.WebApp
     if (url.includes('t.me/invoice') || url.includes('t.me/$')) {
@@ -526,7 +574,7 @@ function App() {
       tg?.openLink ? tg.openLink(url) : window.open(url, '_blank')
     }
   }
-
+ 
   const paySubscription = (method: 'stars' | 'crypto') => {
     if (userId === null) return
     setPayLoading(true)
@@ -538,7 +586,7 @@ function App() {
       .then((data) => { setPayLoading(false); openPayLink(data.invoice_link || data.pay_url) })
       .catch(() => setPayLoading(false))
   }
-
+ 
   const payPremium = (method: 'stars' | 'crypto') => {
     if (userId === null) return
     setPayLoading(true)
@@ -550,7 +598,7 @@ function App() {
       .then((data) => { setPayLoading(false); openPayLink(data.invoice_link || data.pay_url) })
       .catch(() => setPayLoading(false))
   }
-
+ 
   const loadTask = (topic: Topic, difficulty: Difficulty) => {
     setSelectedAnswer(null)
     setAnswerResult(null)
@@ -560,7 +608,7 @@ function App() {
     setLoadError(false)
     setMemoryHidden(false)
     setReadingHidden(false)
-
+ 
     if (topic === 'differences') {
       const board = generateDifferencesBoard(difficulty)
       setDiffBoard(board)
@@ -568,7 +616,7 @@ function App() {
       setScreen('task')
       return
     }
-
+ 
     if (CLIENT_TOPICS.includes(topic)) {
       let generated: Task
       if (topic === 'speed') generated = generateSpeedTask(difficulty)
@@ -585,7 +633,7 @@ function App() {
       setScreen('task')
       return
     }
-
+ 
     setLoading(true)
     setScreen('task')
     fetch(`${API_URL}/api/task?category=${topic}&difficulty=${difficulty}`)
@@ -597,7 +645,7 @@ function App() {
       })
       .catch(() => { setLoading(false); setLoadError(true) })
   }
-
+ 
   useEffect(() => {
     if (timeLeft === null || answerResult) return
     if (timeLeft <= 0) { submitAnswer(''); return }
@@ -605,11 +653,11 @@ function App() {
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeLeft, answerResult])
-
+ 
   const submitAnswer = (opt: string) => {
     if (!task || !selectedTopic || selectedAnswer !== null) return
     setSelectedAnswer(opt)
-
+ 
     if (CLIENT_TOPICS.includes(selectedTopic)) {
       const isCorrect = opt === task.correct
       const result: AnswerResult = { is_correct: isCorrect, correct_answer: task.correct || '', explanation: task.explanation || '', xp_earned: isCorrect ? 10 : 0 }
@@ -628,7 +676,7 @@ function App() {
       }
       return
     }
-
+ 
     const uid = userId ?? 0
     fetch(`${API_URL}/api/answer`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -647,7 +695,7 @@ function App() {
       })
       .catch(() => setAnswerResult({ is_correct: false, correct_answer: '', explanation: t.loadError, xp_earned: 0 }))
   }
-
+ 
   const tapDiffCell = (index: number) => {
     if (!diffBoard || answerResult || !selectedTopic) return
     if (!diffBoard.diffPositions.has(index)) return
@@ -667,68 +715,68 @@ function App() {
       }
     }
   }
-
+ 
   const handleNext = () => {
     if (!selectedTopic || !selectedDifficulty) return
     const stats = topicStats[selectedTopic]
     if (stats.total > 0 && stats.total % SERIES_LENGTH === 0) setScreen('summary')
     else loadTask(selectedTopic, selectedDifficulty)
   }
-
+ 
   const continueAfterSummary = () => {
     if (!selectedTopic || !selectedDifficulty) return
     loadTask(selectedTopic, selectedDifficulty)
   }
-
+ 
   const fetchTopBarStats = (uid: number) => {
     fetch(`${API_URL}/api/stats/${uid}`).then((res) => res.json()).then((data: UserStats) => setUserStats(data)).catch(() => {})
   }
-
+ 
   useEffect(() => {
     if (userId !== null) fetchTopBarStats(userId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId])
-
+ 
   const openStats = () => {
     const uid = userId ?? 0
     setPrevScreen(screen); setScreen('stats'); setStatsLoading(true)
     fetch(`${API_URL}/api/stats/${uid}`).then((res) => res.json()).then((data: UserStats) => { setUserStats(data); setStatsLoading(false) }).catch(() => setStatsLoading(false))
   }
-
+ 
   const openAchievements = () => {
     const uid = userId ?? 0
     setScreen('achievements'); setAchievementsLoading(true)
     fetch(`${API_URL}/api/achievements/${uid}`).then((res) => res.json()).then((data: { unlocked: string[] }) => { setUnlockedAchievements(data.unlocked); setAchievementsLoading(false) }).catch(() => setAchievementsLoading(false))
   }
-
+ 
   const openLeaderboard = () => {
     setScreen('leaderboard'); setLeaderboardLoading(true)
     const uid = userId ?? 0
     fetch(`${API_URL}/api/leaderboard?user_id=${uid}`).then((res) => res.json()).then((data: LeaderboardData) => { setLeaderboardData(data); setLeaderboardLoading(false) }).catch(() => setLeaderboardLoading(false))
   }
-
+ 
   const answerWarmup = (opt: string) => {
     if (warmupAnswered !== null) return
     setWarmupAnswered(opt)
-    const q = WARMUP_QUESTIONS[warmupStep]
+    const q = warmupQuestions[warmupStep]
     const isCorrect = opt === q.correct
     haptic(isCorrect ? 'success' : 'error')
     setWarmupCorrect(warmupCorrect + (isCorrect ? 1 : 0))
   }
-
+ 
   const proceedWarmup = () => {
     const newCorrect = warmupCorrect
     setWarmupAnswered(null)
-    if (warmupStep + 1 < WARMUP_QUESTIONS.length) setWarmupStep(warmupStep + 1)
+    if (warmupStep + 1 < warmupQuestions.length) setWarmupStep(warmupStep + 1)
     else {
       const level: Difficulty = newCorrect === 0 ? 1 : newCorrect === 1 ? 2 : 3
       setWarmupLevel(level)
       setScreen('warmupResult')
     }
   }
-
+ 
   const s = getStyles(c)
-
+ 
   const getMemoryQuestionText = (): string => {
     if (!task) return ''
     if (!answerResult) {
@@ -737,9 +785,9 @@ function App() {
     }
     return task.question
   }
-
+ 
   const isTrialBlocked = access !== null && !access.subscription_active && !access.trial_active
-
+ 
   return (
     <div style={s.page}>
       <style>{`
@@ -759,16 +807,16 @@ function App() {
         @keyframes confettiBurst { 0% { transform: translate(0,0) scale(1); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) scale(0); opacity: 0; } }
         .confetti-dot { position: absolute; width: 7px; height: 7px; border-radius: 50%; animation: confettiBurst 0.6s ease-out forwards; }
       `}</style>
-
+ 
       {background === 'space' && <StarField />}
-
+ 
       {screen !== 'welcome' && (
         <div style={s.topControls}>
           <button style={s.toggleBtn} onClick={() => setLang(lang === 'ru' ? 'en' : 'ru')}>{lang === 'ru' ? 'RU' : 'EN'}</button>
           <button style={s.toggleBtn} onClick={cycleBackground}>{BACKGROUND_ICON[background]}</button>
         </div>
       )}
-
+ 
       {screen === 'welcome' && (
         <div style={s.welcomeWrap}>
           <div style={{ marginBottom: '1rem' }}><Brain3D size={140} /></div>
@@ -777,15 +825,15 @@ function App() {
           <button style={s.nextButton} onClick={() => { setWarmupStep(0); setWarmupCorrect(0); setWarmupAnswered(null); setScreen('warmup') }}>{t.start}</button>
         </div>
       )}
-
+ 
       {screen === 'warmup' && (
         <div className="screen-anim">
           <h1 style={s.title}>{t.warmupTitle}</h1>
           <p style={s.subtitle}>{t.warmupSubtitle}</p>
-          <p style={s.question}>{WARMUP_QUESTIONS[warmupStep].question[lang]}</p>
+          <p style={s.question}>{warmupQuestions[warmupStep].question[lang]}</p>
           <div style={s.gridAnswers}>
-            {WARMUP_QUESTIONS[warmupStep].options.map((opt) => {
-              const isCorrectOption = opt === WARMUP_QUESTIONS[warmupStep].correct
+            {warmupQuestions[warmupStep].options.map((opt) => {
+              const isCorrectOption = opt === warmupQuestions[warmupStep].correct
               const isSelectedWrong = warmupAnswered !== null && opt === warmupAnswered && !isCorrectOption
               let style = { ...s.cardAnswer }
               if (warmupAnswered !== null && isCorrectOption) style = s.cardCorrect
@@ -796,7 +844,7 @@ function App() {
           {warmupAnswered !== null && <button style={s.nextButton} onClick={proceedWarmup}>{t.continueBtn}</button>}
         </div>
       )}
-
+ 
       {screen === 'warmupResult' && (
         <div className="screen-anim" style={s.welcomeWrap}>
           <div style={s.welcomeEmoji}>🎯</div>
@@ -805,7 +853,7 @@ function App() {
           <button style={s.nextButton} onClick={() => setScreen('topic')}>{t.continueBtn}</button>
         </div>
       )}
-
+ 
       {screen === 'topic' && (
         <div className="screen-anim">
           <button style={s.statsButton} onClick={openStats} aria-label={t.stats}>📊</button>
@@ -854,7 +902,7 @@ function App() {
           </div>
         </div>
       )}
-
+ 
       {screen === 'paywall' && (
         <div className="screen-anim" style={s.welcomeWrap}>
           <div style={s.welcomeEmoji}>⏳</div>
@@ -864,7 +912,7 @@ function App() {
           <button style={{ ...s.nextButton, marginTop: '0.75rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, color: c.text }} disabled={payLoading} onClick={() => paySubscription('crypto')}>💎 {payLoading ? t.creatingInvoice : t.payWithCrypto}</button>
         </div>
       )}
-
+ 
       {screen === 'premiumPurchase' && (
         <div className="screen-anim" style={s.welcomeWrap}>
           <div style={s.welcomeEmoji}>💎</div>
@@ -875,7 +923,7 @@ function App() {
           <button style={s.backButtonStatic} onClick={() => setScreen('topic')}>{t.back}</button>
         </div>
       )}
-
+ 
       {screen === 'difficulty' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('topic')}>{t.back}</button>
@@ -891,7 +939,7 @@ function App() {
           </div>
         </div>
       )}
-
+ 
       {screen === 'task' && selectedTopic === 'differences' && diffBoard && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('difficulty')}>{t.back}</button>
@@ -911,7 +959,7 @@ function App() {
           )}
         </div>
       )}
-
+ 
       {screen === 'task' && selectedTopic === 'reading' && task && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('difficulty')}>{t.back}</button>
@@ -946,7 +994,7 @@ function App() {
           )}
         </div>
       )}
-
+ 
       {screen === 'task' && selectedTopic !== 'differences' && selectedTopic !== 'reading' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('difficulty')}>{t.back}</button>
@@ -1003,7 +1051,7 @@ function App() {
           )}
         </div>
       )}
-
+ 
       {screen === 'summary' && selectedTopic && (
         <div className="screen-anim" style={s.welcomeWrap}>
           <div style={s.welcomeEmoji}>{topicStats[selectedTopic].correct === SERIES_LENGTH ? '🔥' : '💪'}</div>
@@ -1012,7 +1060,7 @@ function App() {
           <button style={s.nextButton} onClick={continueAfterSummary}>{t.continueBtn}</button>
         </div>
       )}
-
+ 
       {screen === 'stats' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen(prevScreen)}>{t.back}</button>
@@ -1045,7 +1093,7 @@ function App() {
           )}
         </div>
       )}
-
+ 
       {screen === 'achievements' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('stats')}>{t.back}</button>
@@ -1066,7 +1114,7 @@ function App() {
           )}
         </div>
       )}
-
+ 
       {screen === 'leaderboard' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('stats')}>{t.back}</button>
@@ -1085,7 +1133,7 @@ function App() {
           )}
         </div>
       )}
-
+ 
       {screen === 'invite' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('stats')}>{t.back}</button>
@@ -1117,7 +1165,7 @@ function App() {
     </div>
   )
 }
-
+ 
 function getStyles(c: typeof PALETTES.dark): Record<string, React.CSSProperties> {
   return {
     page: { minHeight: '100vh', background: c.bg, color: c.text, fontFamily: '-apple-system, sans-serif', padding: '2.5rem 1.25rem', textAlign: 'center', position: 'relative', overflow: 'hidden' },
@@ -1162,5 +1210,5 @@ function getStyles(c: typeof PALETTES.dark): Record<string, React.CSSProperties>
     achievementCardLocked: { background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '16px', padding: '1rem 0.75rem', opacity: 0.6 },
   }
 }
-
+ 
 export default App
