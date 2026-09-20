@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import Brain3D from './Brain3D'
 
 declare global {
   interface Window {
@@ -770,7 +771,7 @@ function App() {
 
       {screen === 'welcome' && (
         <div style={s.welcomeWrap}>
-          <div style={s.welcomeEmoji}>🧠</div>
+          <div style={{ marginBottom: '1rem' }}><Brain3D size={140} /></div>
           <h1 style={s.welcomeTitle}>{t.welcomeTitle}</h1>
           <p style={s.welcomeSubtitle}>{t.welcomeSubtitle}</p>
           <button style={s.nextButton} onClick={() => { setWarmupStep(0); setWarmupCorrect(0); setWarmupAnswered(null); setScreen('warmup') }}>{t.start}</button>
@@ -830,7 +831,7 @@ function App() {
                 if (isTrialBlocked) { setScreen('paywall'); return }
                 setSelectedTopic(key); setScreen('difficulty')
               }}>
-                <div style={s.cardEmoji}>{TOPIC_EMOJI[key]}</div>
+                {key === 'memory' ? <Brain3D size={40} /> : <div style={s.cardEmoji}>{TOPIC_EMOJI[key]}</div>}
                 <div style={s.cardLabel}>{t.topics[key]}</div>
               </button>
             ))}
