@@ -2,6 +2,9 @@
 
 import type { MatrixProfile } from './matrices'
 import type { ReadingProfile } from './reading'
+import type { GameProfiles } from './gamestats'
+import { PROFILE_TOPICS, TOPIC_RANKS } from './gamestats'
+import type { ProfileTopic } from './gamestats'
 
 export type StatsLite = {
   current_streak: number
@@ -19,12 +22,13 @@ export type AchievementContext = {
   stats: StatsLite | null
   matrix: MatrixProfile
   reading: ReadingProfile
+  games: GameProfiles
   meta: Meta
 }
 
 type Bi = { ru: string; en: string }
 
-export type GroupId = 'streak' | 'answers' | 'level' | 'mastery' | 'matrices' | 'reading'
+export type GroupId = 'streak' | 'answers' | 'level' | 'mastery' | 'games' | 'matrices' | 'reading'
 
 export type AchievementDef = {
   id: string
@@ -41,6 +45,7 @@ export const ACHIEVEMENT_GROUPS: { id: GroupId; title: Bi }[] = [
   { id: 'answers', title: { ru: 'Верные ответы', en: 'Correct answers' } },
   { id: 'level', title: { ru: 'Уровень и опыт', en: 'Level & XP' } },
   { id: 'mastery', title: { ru: 'Мастерство', en: 'Mastery' } },
+  { id: 'games', title: { ru: 'Тренировки', en: 'Training' } },
   { id: 'matrices', title: { ru: 'Матрицы', en: 'Matrices' } },
   { id: 'reading', title: { ru: 'Скорочтение', en: 'Speed reading' } },
 ]
@@ -51,6 +56,8 @@ const ALL_TOPICS = [...FREE_TOPICS, 'matrices', 'reading']
 const st = (c: AchievementContext) => c.stats
 const catCorrect = (c: AchievementContext, cat: string) => c.stats?.by_category.find((x) => x.category === cat)?.correct ?? 0
 const catTotal = (c: AchievementContext, cat: string) => c.stats?.by_category.find((x) => x.category === cat)?.total ?? 0
+const bestCombo = (c: AchievementContext) => Math.max(0, ...PROFILE_TOPICS.map((t) => c.games[t]?.bestCombo ?? 0))
+const RANK3 = (t: ProfileTopic) => TOPIC_RANKS[t][2].name
 const kindsSolved = (kinds: Record<string, { t: number; c: number }>) => Object.values(kinds).filter((k) => k.c >= 1).length
 
 export const ACHIEVEMENTS: AchievementDef[] = [
@@ -82,6 +89,21 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'trainer_all', emoji: '🗺️', group: 'mastery', target: 10, title: { ru: 'Исследователь', en: 'Explorer' }, description: { ru: 'Попробуй все 10 тем', en: 'Try all 10 topics' }, value: (c) => ALL_TOPICS.filter((t) => catTotal(c, t) >= 1).length },
   { id: 'perfect_1', emoji: '💎', group: 'mastery', target: 1, title: { ru: 'Без ошибок', en: 'Flawless' }, description: { ru: 'Пройди серию из 5 заданий без единой ошибки', en: 'Finish a 5-task series without a single mistake' }, value: (c) => c.meta.perfectSeries },
   { id: 'perfect_10', emoji: '👑', group: 'mastery', target: 10, title: { ru: 'Безупречный', en: 'Perfectionist' }, description: { ru: '10 идеальных серий', en: '10 perfect series' }, value: (c) => c.meta.perfectSeries },
+
+  // Тренировки (очки, ранги и комбо в мини-играх)
+  { id: 'combo_5', emoji: '🔥', group: 'games', target: 5, title: { ru: 'Комбо ×5', en: 'Combo ×5' }, description: { ru: '5 правильных ответов подряд', en: '5 correct answers in a row' }, value: (c) => bestCombo(c) },
+  { id: 'combo_10', emoji: '🔥', group: 'games', target: 10, title: { ru: 'Комбо ×10', en: 'Combo ×10' }, description: { ru: '10 правильных ответов подряд', en: '10 correct answers in a row' }, value: (c) => bestCombo(c) },
+  { id: 'combo_25', emoji: '☄️', group: 'games', target: 25, title: { ru: 'Неудержимый', en: 'Unstoppable' }, description: { ru: '25 правильных ответов подряд', en: '25 correct answers in a row' }, value: (c) => bestCombo(c) },
+  { id: 'fast_25', emoji: '⏱️', group: 'games', target: 25, title: { ru: 'Быстрые мысли', en: 'Quick thinker' }, description: { ru: '25 быстрых правильных ответов', en: '25 quick correct answers' }, value: (c) => PROFILE_TOPICS.reduce((a, t) => a + (c.games[t]?.fast ?? 0), 0) },
+  { id: 'rank_memory', emoji: '🐘', group: 'games', target: 300, title: { ru: `Память: ${RANK3('memory')}`, en: `Memory: ${RANK3('memory')}` }, description: { ru: 'Набери 300 очков в теме «Память»', en: 'Earn 300 points in «Memory»' }, value: (c) => c.games['memory']?.points ?? 0 },
+  { id: 'rank_attention', emoji: '🎯', group: 'games', target: 300, title: { ru: `Внимание: ${RANK3('attention')}`, en: `Attention: ${RANK3('attention')}` }, description: { ru: 'Набери 300 очков в теме «Внимание»', en: 'Earn 300 points in «Attention»' }, value: (c) => c.games['attention']?.points ?? 0 },
+  { id: 'rank_logic', emoji: '♟️', group: 'games', target: 300, title: { ru: `Логика: ${RANK3('logic')}`, en: `Logic: ${RANK3('logic')}` }, description: { ru: 'Набери 300 очков в теме «Логика»', en: 'Earn 300 points in «Logic»' }, value: (c) => c.games['logic']?.points ?? 0 },
+  { id: 'rank_math', emoji: '🎓', group: 'games', target: 300, title: { ru: `Счёт: ${RANK3('math')}`, en: `Math: ${RANK3('math')}` }, description: { ru: 'Набери 300 очков в теме «Счёт»', en: 'Earn 300 points in «Math»' }, value: (c) => c.games['math']?.points ?? 0 },
+  { id: 'rank_speed', emoji: '⚡', group: 'games', target: 300, title: { ru: `Скорость: ${RANK3('speed')}`, en: `Speed: ${RANK3('speed')}` }, description: { ru: 'Набери 300 очков в теме «Скорость»', en: 'Earn 300 points in «Speed»' }, value: (c) => c.games['speed']?.points ?? 0 },
+  { id: 'rank_colors', emoji: '🌈', group: 'games', target: 300, title: { ru: `Цвета: ${RANK3('colors')}`, en: `Colors: ${RANK3('colors')}` }, description: { ru: 'Набери 300 очков в теме «Цвета»', en: 'Earn 300 points in «Colors»' }, value: (c) => c.games['colors']?.points ?? 0 },
+  { id: 'rank_words', emoji: '📖', group: 'games', target: 300, title: { ru: `Слова: ${RANK3('words')}`, en: `Words: ${RANK3('words')}` }, description: { ru: 'Набери 300 очков в теме «Слова»', en: 'Earn 300 points in «Words»' }, value: (c) => c.games['words']?.points ?? 0 },
+  { id: 'rank_differences', emoji: '🕵️', group: 'games', target: 300, title: { ru: `Отличия: ${RANK3('differences')}`, en: `Differences: ${RANK3('differences')}` }, description: { ru: 'Набери 300 очков в теме «Отличия»', en: 'Earn 300 points in «Differences»' }, value: (c) => c.games['differences']?.points ?? 0 },
+  { id: 'all_ranks', emoji: '🏆', group: 'games', target: 8, title: { ru: 'Разносторонний', en: 'Well-rounded' }, description: { ru: 'Набери 100 очков в каждой из 8 тем', en: 'Earn 100 points in each of the 8 topics' }, value: (c) => PROFILE_TOPICS.filter((t) => (c.games[t]?.points ?? 0) >= 100).length },
 
   // Матрицы
   { id: 'matrix_10', emoji: '🔲', group: 'matrices', target: 10, title: { ru: 'Первые матрицы', en: 'First matrices' }, description: { ru: 'Реши 10 матриц', en: 'Solve 10 matrices' }, value: (c) => c.matrix.solved },

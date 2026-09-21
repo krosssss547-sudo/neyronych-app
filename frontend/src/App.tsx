@@ -1,12 +1,19 @@
-import { Component, useEffect, useRef, useState } from 'react'
+import { Component, Suspense, lazy, memo, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import Brain3D from './Brain3D'
 import { generateMatrix, loadMatrixProfile, saveMatrixProfile, recordMatrixResult, getRank, analyzeProfile, kindLabel, PERFECT_SERIES_POINTS, FAST_BONUS_XP } from './matrices'
 import type { MatrixProfile } from './matrices'
 import { generateReading, loadReadingProfile, saveReadingProfile, recordReadingResult, averageWpm, getSpeedTier, readingKindLabel, analyzeReading, BONUS_XP as READING_BONUS_XP } from './reading'
 import type { ReadingProfile, ReadingTask } from './reading'
 import { ACHIEVEMENTS, ACHIEVEMENT_GROUPS, evaluateAchievements, loadMeta, saveMeta, loadSeenAchievements, saveSeenAchievements } from './achievements'
 import type { AchievementState, Meta } from './achievements'
+import { generateGame, isGameTopic } from './games'
+import type { GameTask, GameTopic, Stimulus } from './gametypes'
+import { loadGameProfiles, saveGameProfiles, recordGameResult, getGameRank, analyzeGame, kindTitle, comboBonusXp, POINTS_PER_LEVEL, FAST_BONUS_POINTS, FAST_BONUS_XP as GAME_FAST_XP, PERFECT_SERIES_POINTS as GAME_PERFECT_POINTS } from './gamestats'
+import type { GameProfiles, ProfileTopic } from './gamestats'
+import { sfx, isSoundOn, setSoundOn } from './sfx'
+
+// 3D-мозг тяжёлый (three.js) — грузим отдельно, чтобы приложение открывалось быстрее
+const Brain3D = lazy(() => import('./Brain3D'))
 
 declare global {
   interface Window {
@@ -40,6 +47,7 @@ type Task = {
 }
 type SeriesEntry = { ok: boolean; ms: number; kind?: string; wpm?: number }
 type ReadPhase = 'intro' | 'show' | 'question'
+type GamePhase = 'show' | 'question' | 'watch' | 'input'
 type AnswerResult = { is_correct: boolean; correct_answer: string; explanation: string; xp_earned: number }
 type UserStats = {
   current_streak: number
@@ -65,7 +73,6 @@ type LeaderboardData = { top: LeaderboardEntry[]; my_rank: number | null }
 
 const TOPIC_KEYS: Topic[] = ['memory', 'attention', 'logic', 'math', 'differences', 'speed', 'colors', 'words']
 const PREMIUM_TOPIC_KEYS: Topic[] = ['matrices', 'reading']
-const CLIENT_TOPICS: Topic[] = ['differences', 'speed', 'colors', 'words', 'matrices', 'reading']
 const DIFFICULTY_KEYS: Difficulty[] = [1, 2, 3]
 const TOPIC_EMOJI: Record<Topic, string> = {
   memory: '🧠', attention: '👁', logic: '🧩', math: '🔢',
@@ -83,6 +90,7 @@ const BACKGROUNDS: { id: Background; icon: string; name: { ru: string; en: strin
   { id: 'sunset', icon: '🌆', name: { ru: 'Закат', en: 'Synthwave' }, swatch: 'linear-gradient(180deg, #2a0a4d, #c2307a 55%, #ffb36b)' },
 ]
 const SERIES_LENGTH = 5
+const DIFF_TIME: Record<Difficulty, number> = { 1: 60, 2: 75, 3: 90 }
 
 const API_URL = 'https://neyronych-app.onrender.com'
 
@@ -149,69 +157,6 @@ function shuffleArray<T>(arr: T[]): T[] {
     ;[a[i], a[j]] = [a[j], a[i]]
   }
   return a
-}
-
-function generateSpeedTask(difficulty: Difficulty): Task {
-  let a: number, b: number, timeLimit: number
-  if (difficulty === 1) { a = rand(2, 9); b = rand(2, 9); timeLimit = 8 }
-  else if (difficulty === 2) { a = rand(10, 30); b = rand(2, 9); timeLimit = 6 }
-  else { a = rand(11, 30); b = rand(11, 30); timeLimit = 5 }
-  const correct = a * b
-  const wrongPool = shuffleArray([correct + rand(1, 9), correct - rand(1, 9), correct + rand(10, 25)])
-  const options = shuffleArray([String(correct), ...wrongPool.map(String)])
-  return { task_id: 'speed-' + Date.now(), question: `${a} × ${b} = ?`, options, correct: String(correct), explanation: `${a} × ${b} = ${correct}`, timeLimit }
-}
-
-const COLOR_WORDS = [
-  { name: { ru: 'Красный', en: 'Red' }, hex: '#EF4444' },
-  { name: { ru: 'Синий', en: 'Blue' }, hex: '#3B82F6' },
-  { name: { ru: 'Зелёный', en: 'Green' }, hex: '#22C55E' },
-  { name: { ru: 'Жёлтый', en: 'Yellow' }, hex: '#EAB308' },
-]
-
-function generateColorsTask(difficulty: Difficulty, lang: Lang): Task {
-  const wordObj = COLOR_WORDS[rand(0, COLOR_WORDS.length - 1)]
-  let colorObj = COLOR_WORDS[rand(0, COLOR_WORDS.length - 1)]
-  while (colorObj.name.ru === wordObj.name.ru) colorObj = COLOR_WORDS[rand(0, COLOR_WORDS.length - 1)]
-  const timeLimit = difficulty === 1 ? 8 : difficulty === 2 ? 6 : 4
-  const options = shuffleArray(COLOR_WORDS.map(c => c.name[lang]))
-  return {
-    task_id: 'color-' + Date.now(),
-    question: wordObj.name[lang], options, correct: colorObj.name[lang],
-    explanation: lang === 'ru' ? `Слово написано ${colorObj.name.ru.toLowerCase()} цветом` : `The word is rendered in ${colorObj.name.en.toLowerCase()}`,
-    timeLimit, isColorTask: true, colorHex: colorObj.hex,
-  }
-}
-
-const WORD_BANK: Record<Difficulty, string[]> = {
-  1: ['корзина', 'дорога', 'салфетка', 'котёнок', 'подушка', 'ромашка'],
-  2: ['библиотека', 'автомобиль', 'коллекция', 'ландшафт', 'учреждение', 'впечатление'],
-  3: ['приключение', 'удивительный', 'путешествие', 'воображение', 'самостоятельный', 'преодоление'],
-}
-
-function similarDecoy(word: string, existing: string[]): string {
-  let attempt = word
-  let tries = 0
-  do {
-    const arr = word.split('')
-    const i1 = rand(0, arr.length - 1)
-    let i2 = rand(0, arr.length - 1)
-    while (i2 === i1) i2 = rand(0, arr.length - 1)
-    ;[arr[i1], arr[i2]] = [arr[i2], arr[i1]]
-    attempt = arr.join('')
-    tries++
-  } while ((attempt === word || existing.includes(attempt)) && tries < 20)
-  return attempt
-}
-
-function generateWordsTask(difficulty: Difficulty): Task {
-  const words = WORD_BANK[difficulty]
-  const word = words[rand(0, words.length - 1)]
-  const scrambled = shuffleArray(word.split('')).join('')
-  const decoys: string[] = []
-  while (decoys.length < 3) decoys.push(similarDecoy(word, decoys))
-  const options = shuffleArray([word, ...decoys])
-  return { task_id: 'word-' + Date.now(), question: `Собери слово: ${scrambled.toUpperCase()}`, options, correct: word, explanation: `Слово: ${word}` }
 }
 
 type DiffBoard = { size: number; diffCount: number; cells: string[]; diffPositions: Set<number> }
@@ -362,6 +307,89 @@ const I18N = {
   },
 }
 
+// ───────── Безопасный localStorage (в некоторых WebView он бросает ошибку) ─────────
+
+function lsGet(key: string): string | null {
+  try { return localStorage.getItem(key) } catch { return null }
+}
+function lsSet(key: string, value: string): void {
+  try { localStorage.setItem(key, value) } catch { /* ignore */ }
+}
+
+// ───────── Сервер: проверка ответов и очередь неотправленных ответов ─────────
+
+function isAccess(d: unknown): d is AccessStatus {
+  const x = d as AccessStatus | null
+  return !!x && typeof x.subscription_active === 'boolean' && typeof x.trial_active === 'boolean' && typeof x.trial_seconds_left === 'number'
+}
+
+const ACCESS_KEY = 'neyronych_access_v1'
+
+function loadAccessCache(): AccessStatus | null {
+  try {
+    const raw = lsGet(ACCESS_KEY)
+    if (!raw) return null
+    const { data, at } = JSON.parse(raw)
+    if (!isAccess(data) || typeof at !== 'number') return null
+    const elapsed = Math.max(0, Math.floor((Date.now() - at) / 1000))
+    const left = Math.max(0, data.trial_seconds_left - elapsed)
+    return { ...data, trial_seconds_left: left, trial_active: data.trial_active && left > 0 }
+  } catch { return null }
+}
+
+function saveAccessCache(a: AccessStatus): void {
+  lsSet(ACCESS_KEY, JSON.stringify({ data: a, at: Date.now() }))
+}
+
+type QueuedAnswer = { user_id: number; category: string; is_correct: boolean; xp_value: number; at: number }
+const QUEUE_KEY = 'neyronych_queue_v1'
+
+function loadQueue(): QueuedAnswer[] {
+  try {
+    const arr = JSON.parse(lsGet(QUEUE_KEY) || '[]')
+    return Array.isArray(arr) ? arr : []
+  } catch { return [] }
+}
+function saveQueue(q: QueuedAnswer[]): void { lsSet(QUEUE_KEY, JSON.stringify(q.slice(-200))) }
+
+async function postAnswer(p: QueuedAnswer): Promise<'ok' | 'retry' | 'drop'> {
+  try {
+    const res = await fetch(`${API_URL}/api/answer/client`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: p.user_id, category: p.category, is_correct: p.is_correct, xp_value: p.xp_value }),
+    })
+    if (res.ok) return 'ok'
+    return res.status >= 500 ? 'retry' : 'drop'
+  } catch { return 'retry' }
+}
+
+let flushing = false
+async function flushQueue(): Promise<void> {
+  if (flushing) return
+  flushing = true
+  try {
+    const q = loadQueue()
+    if (q.length === 0) return
+    const rest: QueuedAnswer[] = []
+    let stop = false
+    for (const item of q) {
+      if (Date.now() - item.at > 7 * 86400000) continue
+      if (stop) { rest.push(item); continue }
+      const r = await postAnswer(item)
+      if (r === 'retry') { rest.push(item); stop = true }
+    }
+    saveQueue(rest)
+  } finally { flushing = false }
+}
+
+// Отправляет ответ; если сервер спит или нет сети — кладёт в очередь и досылает позже. Возвращает true, если дошло.
+async function sendAnswer(p: QueuedAnswer): Promise<boolean> {
+  const r = await postAnswer(p)
+  if (r === 'retry') { saveQueue([...loadQueue(), p]); return false }
+  if (r === 'ok') void flushQueue()
+  return r === 'ok'
+}
+
 const PALETTES = {
   dark: {
     bg: '#0a0a12',
@@ -390,14 +418,14 @@ function Skeleton({ height, width, bg, style }: { height: string; width: string;
   return <div className="skeleton-pulse" style={{ height, width, borderRadius: '12px', background: bg, ...style }} />
 }
 
-function StarField() {
-  const stars = Array.from({ length: 60 }, (_, i) => ({
+const StarField = memo(function StarField() {
+  const [stars] = useState(() => Array.from({ length: 60 }, (_, i) => ({
     id: i,
     top: Math.random() * 100,
     left: Math.random() * 100,
     size: Math.random() * 2 + 1,
     delay: Math.random() * 3,
-  }))
+  })))
   return (
     <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
       {stars.map((s) => (
@@ -408,20 +436,16 @@ function StarField() {
       ))}
     </div>
   )
-}
+})
 
-function CelebrateFX({ xp }: { xp: number }) {
-  const colors = ['#4D4DFF', '#22C55E', '#FFC850', '#EF4444', '#3B82F6']
-  const dots = Array.from({ length: 14 }, (_, i) => {
-    const angle = (Math.PI * 2 * i) / 14
-    const dist = 50 + Math.random() * 30
-    return {
-      id: i,
-      color: colors[i % colors.length],
-      dx: Math.cos(angle) * dist,
-      dy: Math.sin(angle) * dist,
-      delay: Math.random() * 0.1,
-    }
+const CelebrateFX = memo(function CelebrateFX({ xp }: { xp: number }) {
+  const [dots] = useState(() => {
+    const colors = ['#4D4DFF', '#22C55E', '#FFC850', '#EF4444', '#3B82F6']
+    return Array.from({ length: 14 }, (_, i) => {
+      const angle = (Math.PI * 2 * i) / 14
+      const dist = 50 + Math.random() * 30
+      return { id: i, color: colors[i % colors.length], dx: Math.cos(angle) * dist, dy: Math.sin(angle) * dist, delay: Math.random() * 0.1 }
+    })
   })
   return (
     <div style={{ position: 'relative', height: 0 }}>
@@ -431,6 +455,36 @@ function CelebrateFX({ xp }: { xp: number }) {
         ))}
         <div className="xp-fly" style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', color: '#FFC850', fontWeight: 700, fontSize: '1.1rem', whiteSpace: 'nowrap' }}>+{xp} XP</div>
       </div>
+    </div>
+  )
+})
+
+function Brain({ size }: { size: number }) {
+  return (
+    <Suspense fallback={<div style={{ width: size, height: size, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.7 }}>🧠</div>}>
+      <Brain3D size={size} />
+    </Suspense>
+  )
+}
+
+// Показ стимула для игр: текст или сетка клеток
+function StimulusView({ stim, cardBg, cardBorder, text }: { stim: Stimulus; cardBg: string; cardBorder: string; text: string }) {
+  if (stim.type === 'text') {
+    const size = stim.size === 'xl' ? '2.3rem' : stim.size === 'lg' ? '1.6rem' : '1.15rem'
+    return (
+      <div style={{ background: cardBg, border: `0.5px solid ${cardBorder}`, borderRadius: '18px', padding: '1.2rem 1rem', maxWidth: '380px', margin: '0 auto 1.1rem', boxSizing: 'border-box', whiteSpace: 'pre-line', fontSize: size, fontWeight: 600, lineHeight: 1.5, letterSpacing: stim.size === 'xl' ? '0.06em' : 0, position: 'relative', zIndex: 1, color: text }}>
+        {stim.text}
+      </div>
+    )
+  }
+  const longest = Math.max(1, ...stim.cells.map((x) => [...x.text].length))
+  const base = stim.size === 'lg' ? 1.9 : stim.size === 'sm' ? 1.1 : 1.5
+  const fs = longest > 3 ? (stim.cols >= 5 ? 0.7 : 0.85) : stim.cols >= 6 ? base * 0.8 : base
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${stim.cols}, 1fr)`, gap: '6px', maxWidth: '380px', margin: '0 auto 1.1rem', position: 'relative', zIndex: 1 }}>
+      {stim.cells.map((cell, i) => (
+        <div key={i} style={{ minHeight: longest > 3 ? '38px' : '46px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '10px', background: cell.bg ?? cardBg, border: `0.5px solid ${cardBorder}`, color: cell.color ?? text, fontSize: `${fs}rem`, fontWeight: cell.color ? 800 : 500, boxSizing: 'border-box', padding: '2px', overflowWrap: 'anywhere', lineHeight: 1.1 }}>{cell.text}</div>
+      ))}
     </div>
   )
 }
@@ -605,9 +659,6 @@ function AppInner() {
   const [task, setTask] = useState<Task | null>(null)
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null)
   const [answerResult, setAnswerResult] = useState<AnswerResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [loadError, setLoadError] = useState(false)
-  const [memoryHidden, setMemoryHidden] = useState(false)
   const [readTask, setReadTask] = useState<ReadingTask | null>(null)
   const [readPhase, setReadPhase] = useState<ReadPhase>('intro')
   const readStartRef = useRef<number>(0)
@@ -630,10 +681,25 @@ function AppInner() {
   const [diffFound, setDiffFound] = useState<number[]>([])
   const [diffBoard, setDiffBoard] = useState<DiffBoard | null>(null)
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
-  const [access, setAccess] = useState<AccessStatus | null>(null)
+  const [access, setAccess] = useState<AccessStatus | null>(loadAccessCache)
   const [payLoading, setPayLoading] = useState(false)
   const [referralStats, setReferralStats] = useState<ReferralStats | null>(null)
   const [linkCopied, setLinkCopied] = useState(false)
+
+  // ───── мини-игры (Память/Внимание/Логика/Счёт/Скорость/Цвета/Слова)
+  const [game, setGame] = useState<GameTask | null>(null)
+  const [gPhase, setGPhase] = useState<GamePhase>('question')
+  const [gameKey, setGameKey] = useState(0)
+  const [gameProfiles, setGameProfiles] = useState<GameProfiles>(loadGameProfiles)
+  const [combo, setCombo] = useState(0)
+  const comboRef = useRef(0)
+  const answeredRef = useRef(false)
+  const gameStartPointsRef = useRef(0)
+  const [soundOn, setSoundOnState] = useState<boolean>(isSoundOn)
+  const [schulteNext, setSchulteNext] = useState(1)
+  const [corsiInput, setCorsiInput] = useState<number[]>([])
+  const [corsiShowIdx, setCorsiShowIdx] = useState(-1)
+  const [diffLives, setDiffLives] = useState(3)
 
   const [background, setBackground] = useState<Background>(() => {
     const saved = localStorage.getItem('neyronych_background')
@@ -673,14 +739,28 @@ function AppInner() {
       if (!isNaN(parsed)) referrerId = parsed
     }
 
-    fetch(`${API_URL}/api/user/init`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: uid, username: uname, referrer_id: referrerId }),
-    })
-      .then(() => fetch(`${API_URL}/api/access/${uid}`))
-      .then((res) => res.json())
-      .then((data: AccessStatus) => setAccess(data))
-      .catch(() => {})
+    let cancelled = false
+    const tryInit = (attempt: number) => {
+      fetch(`${API_URL}/api/user/init`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: uid, username: uname, referrer_id: referrerId }),
+      })
+        .then(() => fetch(`${API_URL}/api/access/${uid}`))
+        .then((res) => { if (!res.ok) throw new Error('bad'); return res.json() })
+        .then((data: unknown) => {
+          if (cancelled) return
+          if (!isAccess(data)) throw new Error('shape')
+          setAccess(data)
+          saveAccessCache(data)
+          void flushQueue()
+        })
+        .catch(() => {
+          if (cancelled || attempt >= 8) return
+          setTimeout(() => tryInit(attempt + 1), Math.min(15000, 2000 * attempt))
+        })
+    }
+    tryInit(1)
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -724,7 +804,13 @@ function AppInner() {
   }
 
   const refreshAccess = (uid: number) => {
-    fetch(`${API_URL}/api/access/${uid}`).then((res) => res.json()).then((data: AccessStatus) => setAccess(data)).catch(() => {})
+    fetch(`${API_URL}/api/access/${uid}`).then((res) => res.json()).then((data: unknown) => { if (isAccess(data)) { setAccess(data); saveAccessCache(data) } }).catch(() => {})
+  }
+
+  const toggleSound = () => {
+    const next = !soundOn
+    setSoundOnState(next)
+    setSoundOn(next)
   }
 
   const openPayLink = (url?: string) => {
@@ -782,6 +868,11 @@ function AppInner() {
     setSeriesLog([])
     seriesStartPointsRef.current = matrixProfile.points
     seriesStartWpmRef.current = averageWpm(readingProfile)
+    if (selectedTopic && (isGameTopic(selectedTopic) || selectedTopic === 'differences')) {
+      gameStartPointsRef.current = gameProfiles[selectedTopic as ProfileTopic]?.points ?? 0
+    }
+    comboRef.current = 0
+    setCombo(0)
   }
 
   const loadTask = (topic: Topic, difficulty: Difficulty) => {
@@ -791,12 +882,13 @@ function AppInner() {
     setDiffFound([])
     setDiffBoard(null)
     setTimeLeft(null)
-    setLoadError(false)
-    setMemoryHidden(false)
+    answeredRef.current = false
 
     if (topic === 'differences') {
       const board = generateDifferencesBoard(difficulty)
       setDiffBoard(board)
+      setDiffLives(3)
+      setTimeLeft(DIFF_TIME[difficulty])
       setTask({ task_id: 'diff-' + Date.now(), question: '', options: [] })
       setScreen('task')
       return
@@ -812,33 +904,51 @@ function AppInner() {
       return
     }
 
-    if (CLIENT_TOPICS.includes(topic)) {
-      let generated: Task
-      if (topic === 'speed') generated = generateSpeedTask(difficulty)
-      else if (topic === 'colors') generated = generateColorsTask(difficulty, lang)
-      else if (topic === 'words') generated = generateWordsTask(difficulty)
-      else generated = generateMatricesTask(difficulty)
+    if (topic === 'matrices') {
+      const generated = generateMatricesTask(difficulty)
       setTask({ ...generated, options: shuffleArray(generated.options) })
       setTimeLeft(generated.timeLimit || null)
       setScreen('task')
       return
     }
 
-    setLoading(true)
+    // Остальные темы — мини-игры, считаются прямо на телефоне, без обращения к серверу
+    const g = generateGame(topic as GameTopic, difficulty)
+    setGame(g)
+    setGameKey((k) => k + 1)
+    setSchulteNext(1)
+    setCorsiInput([])
+    setCorsiShowIdx(-1)
+    setGPhase(g.layout === 'memorize' ? 'show' : g.layout === 'corsi' ? 'watch' : 'question')
+    setTimeLeft(g.timeLimit || null)
     setScreen('task')
-    fetch(`${API_URL}/api/task?category=${topic}&difficulty=${difficulty}`)
-      .then((res) => { if (!res.ok) throw new Error('bad'); return res.json() })
-      .then((data) => {
-        setTask({ task_id: data.task_id, question: data.question, options: shuffleArray(JSON.parse(data.options)) })
-        setLoading(false)
-        if (topic === 'memory') setTimeout(() => setMemoryHidden(true), 3000)
-      })
-      .catch(() => { setLoading(false); setLoadError(true) })
+  }
+
+  // Провал «Отличий»: закончились жизни или время
+  const failDifferences = () => {
+    if (!diffBoard || answerResult) return
+    setAnswerResult({ is_correct: false, correct_answer: '', explanation: lang === 'ru' ? 'Не в этот раз — вот где были отличия.' : 'Not this time — here is where the differences were.', xp_earned: 0 })
+    haptic('error')
+    sfx.wrong()
+    setSeriesLog((prev) => [...prev, { ok: false, ms: Date.now() - taskStartRef.current }])
+    setGameProfiles((prev) => {
+      const next = { ...prev, differences: recordGameResult(prev.differences, 'grid', false, false, 0, 0) }
+      saveGameProfiles(next)
+      return next
+    })
+    comboRef.current = 0
+    setCombo(0)
   }
 
   useEffect(() => {
     if (timeLeft === null || answerResult || screen !== 'task') return
-    if (timeLeft <= 0) { submitAnswer(''); return }
+    if (timeLeft <= 0) {
+      if (selectedTopic === 'differences') failDifferences()
+      else if (game && (game.layout === 'schulte' || game.layout === 'corsi')) finishGame(false, Date.now() - taskStartRef.current)
+      else if (selectedTopic && isGameTopic(selectedTopic)) submitGame('')
+      else submitAnswer('')
+      return
+    }
     const id = setTimeout(() => setTimeLeft((v) => (v !== null ? v - 1 : null)), 1000)
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -881,7 +991,7 @@ function AppInner() {
     if (!task || !selectedTopic || selectedAnswer !== null) return
     setSelectedAnswer(opt)
 
-    if (CLIENT_TOPICS.includes(selectedTopic)) {
+    if (selectedTopic === 'matrices' || selectedTopic === 'reading') {
       const isCorrect = opt === task.correct
       const elapsedMs = Date.now() - taskStartRef.current
       const isMatrix = selectedTopic === 'matrices' && !!task.kind && !!task.level
@@ -931,48 +1041,159 @@ function AppInner() {
         })
       }
       if (userId !== null) {
-        fetch(`${API_URL}/api/answer/client`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: userId, category: selectedTopic, is_correct: isCorrect, xp_value: isCorrect ? xp : (task.xp ?? 10) }),
-        }).then(() => { if (isCorrect) fetchTopBarStats(userId) }).catch(() => {})
+        void sendAnswer({ user_id: userId, category: selectedTopic, is_correct: isCorrect, xp_value: isCorrect ? xp : (task.xp ?? 10), at: Date.now() })
+        if (isCorrect) fetchTopBarStats(userId)
       }
-      return
     }
-
-    const uid = userId ?? 0
-    fetch(`${API_URL}/api/answer`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: uid, task_id: task.task_id, answer: opt }),
-    })
-      .then((res) => res.json())
-      .then((data: AnswerResult) => {
-        setAnswerResult(data)
-        haptic(data.is_correct ? 'success' : 'error')
-        setSeriesLog((prev) => [...prev, { ok: data.is_correct, ms: Date.now() - taskStartRef.current }])
-        if (data.is_correct) fetchTopBarStats(uid)
-      })
-      .catch(() => setAnswerResult({ is_correct: false, correct_answer: '', explanation: t.loadError, xp_earned: 0 }))
   }
 
   const tapDiffCell = (index: number) => {
     if (!diffBoard || answerResult || !selectedTopic) return
-    if (!diffBoard.diffPositions.has(index)) return
     if (diffFound.includes(index)) return
+    if (!diffBoard.diffPositions.has(index)) {
+      sfx.wrong()
+      haptic('error')
+      const livesLeft = diffLives - 1
+      setDiffLives(livesLeft)
+      if (livesLeft <= 0) failDifferences()
+      return
+    }
     const newFound = [...diffFound, index]
     setDiffFound(newFound)
+    sfx.tap()
     if (newFound.length === diffBoard.diffCount) {
-      const xpValue = diffBoard.diffCount
-      setAnswerResult({ is_correct: true, correct_answer: '', explanation: t.allFound, xp_earned: xpValue })
+      const newCombo = comboRef.current + 1
+      comboRef.current = newCombo
+      setCombo(newCombo)
+      const perfectBonus = diffLives === 3 ? 5 : 0
+      const xpValue = diffBoard.diffCount + perfectBonus
+      const points = 20 + (diffBoard.diffCount > 5 ? 10 : 0) + perfectBonus
+      const explanation = perfectBonus ? `${t.allFound} 💎 ${lang === 'ru' ? 'Без единой ошибки' : 'Flawless'}: +${perfectBonus} XP` : t.allFound
+      setAnswerResult({ is_correct: true, correct_answer: '', explanation, xp_earned: xpValue })
       haptic('success')
+      sfx.correct(newCombo)
       setSeriesLog((prev) => [...prev, { ok: true, ms: Date.now() - taskStartRef.current }])
+      setGameProfiles((prev) => {
+        const next = { ...prev, differences: recordGameResult(prev.differences, 'grid', true, false, points, newCombo) }
+        saveGameProfiles(next)
+        return next
+      })
       if (userId !== null) {
-        fetch(`${API_URL}/api/answer/client`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: userId, category: 'differences', is_correct: true, xp_value: xpValue }),
-        }).then(() => fetchTopBarStats(userId)).catch(() => {})
+        void sendAnswer({ user_id: userId, category: 'differences', is_correct: true, xp_value: xpValue, at: Date.now() })
+        fetchTopBarStats(userId)
       }
     }
   }
+
+  const finishGame = (isCorrect: boolean, elapsedMs: number) => {
+    if (!game || !selectedTopic) return
+    const fast = isCorrect && elapsedMs <= game.fastSeconds * 1000
+    const newCombo = isCorrect ? comboRef.current + 1 : 0
+    comboRef.current = newCombo
+    setCombo(newCombo)
+    const comboXp = isCorrect ? comboBonusXp(newCombo) : 0
+    const xp = isCorrect ? game.xp + (fast ? GAME_FAST_XP : 0) + comboXp : 0
+    const points = isCorrect ? POINTS_PER_LEVEL[game.level] + (fast ? FAST_BONUS_POINTS : 0) : 0
+
+    let note = ''
+    if (isCorrect && fast) note += `\n⚡ ${lang === 'ru' ? 'Быстрый ответ' : 'Fast answer'}: +${GAME_FAST_XP} XP`
+    if (isCorrect && newCombo >= 3) note += `\n🔥 ${lang === 'ru' ? 'Комбо' : 'Combo'} ×${newCombo}: +${comboXp} XP`
+
+    const topicKey = selectedTopic as ProfileTopic
+    const before = getGameRank(topicKey, gameProfiles[topicKey]?.points ?? 0)
+    setGameProfiles((prev) => {
+      const next = { ...prev, [topicKey]: recordGameResult(prev[topicKey], game.kind, isCorrect, fast, points, newCombo) }
+      saveGameProfiles(next)
+      const after = getGameRank(topicKey, next[topicKey].points)
+      if (after.index > before.index) { sfx.rankUp(); haptic('success') }
+      return next
+    })
+
+    setAnswerResult({ is_correct: isCorrect, correct_answer: game.correct, explanation: game.explanation + note, xp_earned: xp })
+    haptic(isCorrect ? 'success' : 'error')
+    if (isCorrect) sfx.correct(newCombo); else sfx.wrong()
+    setSeriesLog((prev) => [...prev, { ok: isCorrect, ms: elapsedMs, kind: game.kind }])
+    if (userId !== null) {
+      void sendAnswer({ user_id: userId, category: selectedTopic, is_correct: isCorrect, xp_value: isCorrect ? xp : (game.xp ?? 10), at: Date.now() })
+      if (isCorrect) fetchTopBarStats(userId)
+    }
+  }
+
+  const submitGame = (ans: string) => {
+    if (!game || answeredRef.current) return
+    answeredRef.current = true
+    setSelectedAnswer(ans)
+    finishGame(ans === game.correct, Date.now() - taskStartRef.current)
+  }
+
+  const tapGameCell = (index: number) => {
+    if (!game || game.layout !== 'tap' || answeredRef.current) return
+    submitGame(String(index))
+  }
+
+  // Таблица Шульте: тап по числам по порядку — ошибка не наказывает, просто не засчитывается
+  const tapSchulte = (index: number) => {
+    if (!game || !game.schulte || answeredRef.current) return
+    const n = game.schulte.numbers[index]
+    if (n !== schulteNext) { sfx.wrong(); return }
+    if (schulteNext >= game.schulte.numbers.length) {
+      answeredRef.current = true
+      sfx.step(schulteNext - 1)
+      setSchulteNext(schulteNext + 1)
+      finishGame(true, Date.now() - taskStartRef.current)
+    } else {
+      sfx.step(schulteNext - 1)
+      setSchulteNext(schulteNext + 1)
+    }
+  }
+
+  // Блоки Корси: повтори порядок вспышек
+  const tapCorsi = (index: number) => {
+    if (!game || !game.corsi || gPhase !== 'input' || answeredRef.current) return
+    const step = corsiInput.length
+    const expected = game.corsi.sequence[step]
+    if (index !== expected) {
+      answeredRef.current = true
+      finishGame(false, Date.now() - taskStartRef.current)
+      return
+    }
+    sfx.step(step)
+    const nextInput = [...corsiInput, index]
+    setCorsiInput(nextInput)
+    if (nextInput.length >= game.corsi.sequence.length) {
+      answeredRef.current = true
+      finishGame(true, Date.now() - taskStartRef.current)
+    }
+  }
+
+  // Memorize: стимул показан showMs, затем открывается вопрос
+  useEffect(() => {
+    if (screen !== 'task' || !game || game.layout !== 'memorize' || gPhase !== 'show') return
+    const id = setTimeout(() => { taskStartRef.current = Date.now(); setGPhase('question') }, game.showMs ?? 2000)
+    return () => clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, game, gPhase, gameKey])
+
+  // Корси: проигрываем последовательность вспышек перед тем, как дать отвечать
+  useEffect(() => {
+    if (screen !== 'task' || !game || game.layout !== 'corsi' || !game.corsi || gPhase !== 'watch') return
+    let cancelled = false
+    const seq = game.corsi.sequence
+    const stepMs = Math.max(420, 900 - game.level * 100)
+    const timers: ReturnType<typeof setTimeout>[] = []
+    let i = 0
+    const tick = () => {
+      if (cancelled) return
+      if (i >= seq.length) { setCorsiShowIdx(-1); taskStartRef.current = Date.now(); setGPhase('input'); return }
+      setCorsiShowIdx(seq[i])
+      sfx.step(i)
+      timers.push(setTimeout(() => { if (!cancelled) setCorsiShowIdx(-1) }, stepMs * 0.6))
+      timers.push(setTimeout(() => { i++; tick() }, stepMs))
+    }
+    const startId = setTimeout(tick, 500)
+    return () => { cancelled = true; clearTimeout(startId); timers.forEach(clearTimeout) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, game, gPhase, gameKey])
 
   const handleNext = () => {
     if (!selectedTopic || !selectedDifficulty) return
@@ -982,7 +1203,15 @@ function AppInner() {
           const next = { ...matrixProfile, points: matrixProfile.points + PERFECT_SERIES_POINTS }
           setMatrixProfile(next)
           saveMatrixProfile(next)
+        } else if (isGameTopic(selectedTopic) || selectedTopic === 'differences') {
+          const topicKey = selectedTopic as ProfileTopic
+          setGameProfiles((prev) => {
+            const next = { ...prev, [topicKey]: { ...prev[topicKey], points: prev[topicKey].points + GAME_PERFECT_POINTS } }
+            saveGameProfiles(next)
+            return next
+          })
         }
+        sfx.unlock()
         const nextMeta = { ...meta, perfectSeries: meta.perfectSeries + 1 }
         setMeta(nextMeta)
         saveMeta(nextMeta)
@@ -1048,7 +1277,7 @@ function AppInner() {
   // Достижения считаются здесь, на телефоне — без запросов к серверу
   let achStates: AchievementState[] = []
   try {
-    achStates = evaluateAchievements({ stats: userStats, matrix: matrixProfile, reading: readingProfile, meta })
+    achStates = evaluateAchievements({ stats: userStats, matrix: matrixProfile, reading: readingProfile, meta, games: gameProfiles })
   } catch { achStates = [] }
   const unlockedKey = achStates.filter((a) => a.unlocked).map((a) => a.def.id).join(',')
   const hasStats = userStats !== null
@@ -1195,7 +1424,7 @@ function AppInner() {
           <p style={{ fontSize: '0.8rem', fontWeight: 500, margin: '0 0 0.5rem', minHeight: '1.1em', color: !answerResult && timeLeft !== null && timeLeft <= 3 ? RED : c.textSecondary }}>
             {!answerResult && timeLeft !== null ? `⏱ ${t.timeLeftLabel}: ${timeLeft}` : ''}
           </p>
-          <p style={{ ...s.question, margin: '0 0 1rem' }}>{rt.question} <span style={{ color: c.textSecondary, fontSize: '0.8rem' }}>— {lang === 'ru' ? 'тапни по нему' : 'tap it'}</span></p>
+          <p style={{ ...s.question, marginTop: 0, marginBottom: '1rem' }}>{rt.question} <span style={{ color: c.textSecondary, fontSize: '0.8rem' }}>— {lang === 'ru' ? 'тапни по нему' : 'tap it'}</span></p>
           <div style={s.matrixGrid}>
             {(rt.words ?? []).map((w, i) => {
               const isDup = answerResult !== null && w === rt.correct
@@ -1264,6 +1493,189 @@ function AppInner() {
     )
   }
 
+  const renderGame = () => {
+    if (!game || !selectedTopic) return null
+    const step = Math.min(SERIES_LENGTH, answerResult ? seriesLog.length : seriesLog.length + 1)
+    const header = (
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', margin: '3rem 0 1.25rem', position: 'relative', zIndex: 1 }}>
+        <span style={s.pill}>{game.kindLabel}</span>
+        <span style={s.pill}>{DIFFICULTY_EMOJI[game.level]} {step}/{SERIES_LENGTH}</span>
+        {combo >= 3 && <span style={{ ...s.pill, color: GOLD, borderColor: GOLD }}>🔥 ×{combo}</span>}
+      </div>
+    )
+    const resultBlock = answerResult && (
+      <>
+        {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
+        <p style={s.explanation}>{answerResult.explanation}</p>
+        <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
+      </>
+    )
+    const timerBar = !answerResult && timeLeft !== null && game.timeLimit ? (
+      <div style={s.timerTrack}><div key={gameKey} style={{ ...s.timerFill, animation: `shrinkBar ${game.timeLimit}s linear forwards` }} /></div>
+    ) : null
+
+    if (game.layout === 'corsi' && game.corsi) {
+      const size = game.corsi.size
+      const total = size * size
+      const seq = game.corsi.sequence
+      return (
+        <>
+          {header}
+          <p style={{ fontSize: '0.85rem', color: c.textSecondary, margin: '0 0 1rem' }}>{gPhase === 'watch' ? game.intro : game.question}</p>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${size}, 1fr)`, gap: '8px', maxWidth: '280px', margin: '0 auto 1rem', position: 'relative', zIndex: 1 }}>
+            {Array.from({ length: total }, (_, i) => {
+              const lit = corsiShowIdx === i
+              const picked = corsiInput.includes(i)
+              const failedCell = answerResult !== null && !answerResult.is_correct && gPhase === 'input' && i === seq[corsiInput.length]
+              return (
+                <div key={i} onClick={() => gPhase === 'input' && !answerResult && tapCorsi(i)} style={{
+                  aspectRatio: '1', borderRadius: '14px',
+                  background: lit ? NEON : picked ? 'rgba(34,197,94,0.35)' : c.cardBg,
+                  border: `0.5px solid ${failedCell ? RED : c.cardBorder}`,
+                  transition: 'background 0.15s ease', cursor: gPhase === 'input' && !answerResult ? 'pointer' : 'default',
+                }} />
+              )
+            })}
+          </div>
+          <p style={{ fontSize: '0.78rem', color: c.textSecondary, position: 'relative', zIndex: 1 }}>
+            {gPhase === 'watch' ? (lang === 'ru' ? '👀 Смотри...' : '👀 Watch...') : `${corsiInput.length}/${seq.length}`}
+          </p>
+          {resultBlock}
+        </>
+      )
+    }
+
+    if (game.layout === 'schulte' && game.schulte) {
+      const cols = game.schulte.cols
+      const numbers = game.schulte.numbers
+      return (
+        <>
+          {header}
+          <p style={{ fontSize: '0.8rem', fontWeight: 500, margin: '0 0 0.5rem', minHeight: '1.1em', color: !answerResult && timeLeft !== null && timeLeft <= 5 ? RED : c.textSecondary }}>
+            {!answerResult && timeLeft !== null ? `⏱ ${t.timeLeftLabel}: ${timeLeft}` : ''}
+          </p>
+          <p style={{ ...s.question, marginTop: 0, marginBottom: '1rem' }}>{game.question} <span style={{ color: NEON, fontSize: '0.85rem' }}>→ {schulteNext}</span></p>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '6px', maxWidth: '380px', margin: '0 auto', position: 'relative', zIndex: 1 }}>
+            {numbers.map((n, i) => {
+              const done = n < schulteNext
+              return (
+                <button key={i} disabled={!!answerResult} onClick={() => tapSchulte(i)}
+                  style={{ aspectRatio: '1', borderRadius: '10px', border: `0.5px solid ${c.cardBorder}`, background: done ? 'rgba(34,197,94,0.18)' : c.cardBg, color: done ? GREEN : c.text, fontWeight: 600, fontSize: '1.05rem', cursor: answerResult ? 'default' : 'pointer' }}>{n}</button>
+              )
+            })}
+          </div>
+          {resultBlock}
+        </>
+      )
+    }
+
+    if (game.layout === 'tap' && game.tap) {
+      const cols = game.tap.cols
+      const cells = game.tap.cells
+      const longest = Math.max(1, ...cells.map((x) => [...x.text].length))
+      const fs = longest > 3 ? (cols >= 5 ? '0.75rem' : '0.9rem') : cols >= 6 ? '1.15rem' : '1.5rem'
+      return (
+        <>
+          {header}
+          <p style={{ fontSize: '0.8rem', fontWeight: 500, margin: '0 0 0.5rem', minHeight: '1.1em', color: !answerResult && timeLeft !== null && timeLeft <= 3 ? RED : c.textSecondary }}>
+            {!answerResult && timeLeft !== null ? `⏱ ${t.timeLeftLabel}: ${timeLeft}` : ''}
+          </p>
+          <p style={s.question}>{game.question}</p>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '6px', maxWidth: '380px', margin: '0 auto', position: 'relative', zIndex: 1 }}>
+            {cells.map((cell, i) => {
+              const isPicked = selectedAnswer === String(i)
+              const isRight = String(i) === game.correct
+              const showResult = answerResult !== null
+              let bg = cell.bg ?? c.cardBg
+              let border = c.cardBorder
+              let cls = ''
+              if (showResult && isRight) { bg = 'rgba(34,197,94,0.22)'; border = GREEN; cls = 'correct-pop' }
+              else if (showResult && isPicked && !isRight) { bg = 'rgba(239,68,68,0.22)'; border = RED; cls = 'wrong-shake' }
+              return (
+                <button key={i} disabled={showResult} onClick={() => tapGameCell(i)} className={cls}
+                  style={{ minHeight: '52px', borderRadius: '10px', border: `0.5px solid ${border}`, background: bg, color: cell.color ?? c.text, fontSize: fs, fontWeight: cell.color ? 800 : 500, cursor: showResult ? 'default' : 'pointer', padding: '2px', overflowWrap: 'anywhere' }}>{cell.text}</button>
+              )
+            })}
+          </div>
+          {resultBlock}
+        </>
+      )
+    }
+
+    // choice / memorize
+    const showStimulus = game.layout === 'memorize' && gPhase === 'show'
+    return (
+      <>
+        {header}
+        {game.intro && (showStimulus || game.layout === 'choice') && <p style={{ fontSize: '0.82rem', color: c.textSecondary, margin: '0 0 0.75rem', position: 'relative', zIndex: 1 }}>{game.intro}</p>}
+        {game.stimulus && (showStimulus || game.layout === 'choice') && <StimulusView stim={game.stimulus} cardBg={c.cardBg} cardBorder={c.cardBorder} text={c.text} />}
+        {showStimulus && game.showMs && (
+          <div style={s.timerTrack}><div key={gameKey} style={{ ...s.timerFill, animation: `shrinkBar ${game.showMs / 1000}s linear forwards` }} /></div>
+        )}
+        {!showStimulus && (
+          <>
+            {game.chip && <p style={{ ...s.pill, display: 'inline-block', margin: '0 0 0.75rem' }}>{game.chip}</p>}
+            {!answerResult && timeLeft !== null && (
+              <p style={{ fontSize: '0.8rem', fontWeight: 500, margin: '0 0 0.5rem', minHeight: '1.1em', color: timeLeft <= 3 ? RED : c.textSecondary }}>⏱ {t.timeLeftLabel}: {timeLeft}</p>
+            )}
+            <p style={{ ...s.question, color: game.questionColor && !answerResult ? game.questionColor : c.text }}>{game.question}</p>
+            <div style={s.gridAnswers}>
+              {game.options.map((opt, i) => {
+                const isSelected = selectedAnswer === opt
+                const showResult = answerResult !== null
+                const isCorrectOption = showResult && opt === answerResult.correct_answer
+                let style = { ...s.cardAnswer }
+                let cls = ''
+                if (showResult && isSelected && !isCorrectOption) { style = s.cardWrong; cls = 'wrong-shake' }
+                else if (isCorrectOption) { style = s.cardCorrect; cls = 'correct-pop' }
+                const isLast = i === game.options.length - 1 && game.options.length % 2 === 1
+                return (
+                  <button key={opt} className={cls} style={{ ...style, fontSize: opt.length > 12 ? '0.82rem' : '0.95rem', gridColumn: isLast ? '1 / -1' : undefined }}
+                    disabled={selectedAnswer !== null} onClick={() => submitGame(opt)}>{opt}</button>
+                )
+              })}
+            </div>
+            {timerBar}
+          </>
+        )}
+        {resultBlock}
+      </>
+    )
+  }
+
+  const renderGameSummary = (topic: ProfileTopic) => {
+    const profile = gameProfiles[topic]
+    const info = getGameRank(topic, profile.points)
+    const before = getGameRank(topic, gameStartPointsRef.current)
+    const gained = profile.points - gameStartPointsRef.current
+    const rankedUp = info.rank.name !== before.rank.name
+    const analysis = analyzeGame(topic, profile)
+    return (
+      <div style={s.statsWrap}>
+        <div style={{ ...s.streakCard, marginBottom: '1rem' }}>
+          <div style={{ fontSize: '2rem', marginBottom: '0.25rem' }}>{info.rank.emoji}</div>
+          <div style={{ fontSize: '1.15rem', fontWeight: 500 }}>Ранг: {info.rank.name}</div>
+          {rankedUp && <div style={{ color: GREEN, fontSize: '0.85rem', marginTop: '0.25rem' }}>🎉 Новый ранг!</div>}
+          <div style={{ ...s.levelBarTrack, margin: '0.75rem 0 0.4rem' }}><div style={{ ...s.levelBarFill, width: `${info.progressPct}%` }} /></div>
+          <div style={{ fontSize: '0.78rem', color: c.textSecondary }}>
+            {profile.points} очков{gained > 0 ? ` (+${gained} за серию)` : ''} · {info.next ? `до «${info.next.name}»: ${info.toNext}` : 'максимальный ранг'}
+          </div>
+          {profile.bestCombo >= 3 && <div style={{ fontSize: '0.78rem', color: GOLD, marginTop: '0.4rem' }}>🔥 Лучшее комбо: ×{profile.bestCombo}</div>}
+        </div>
+        <div style={{ ...s.categoryList, marginBottom: '1rem' }}>
+          {seriesLog.map((e, i) => (
+            <div key={i} style={s.categoryRow}>
+              <span>{e.ok ? '✅' : '❌'} {e.kind ? kindTitle(topic, e.kind) : ''}</span>
+              <span style={{ color: c.textSecondary }}>{Math.max(1, Math.round(e.ms / 1000))} с</span>
+            </div>
+          ))}
+        </div>
+        {analysis.best && <p style={{ fontSize: '0.85rem', color: c.textSecondary, marginBottom: '0.4rem' }}>💪 Сильная сторона: {analysis.best.label} — {analysis.best.pct}%</p>}
+        {analysis.worst && <p style={{ fontSize: '0.85rem', color: c.textSecondary, marginBottom: '0.4rem' }}>🎯 Стоит подтянуть: {analysis.worst.label} — {analysis.worst.pct}%</p>}
+      </div>
+    )
+  }
+
   const renderAchievements = () => {
     const total = achStates.length
     const done = achStates.filter((a) => a.unlocked).length
@@ -1309,15 +1721,6 @@ function AppInner() {
         })}
       </>
     )
-  }
-
-  const getMemoryQuestionText = (): string => {
-    if (!task) return ''
-    if (!answerResult) {
-      const parts = task.question.split('\n\n')
-      if (parts.length >= 2) return memoryHidden ? parts.slice(1).join('\n\n') : parts[0]
-    }
-    return task.question
   }
 
   const isTrialBlocked = access !== null && !access.subscription_active && !access.trial_active
@@ -1377,6 +1780,7 @@ function AppInner() {
         <>
           {bgMenuOpen && <div style={{ position: 'fixed', inset: 0, zIndex: 5 }} onClick={() => setBgMenuOpen(false)} />}
           <div style={s.topControls}>
+            <button style={s.toggleBtn} onClick={toggleSound} aria-label="sound">{soundOn ? '🔊' : '🔇'}</button>
             <button style={s.toggleBtn} onClick={() => setLang(lang === 'ru' ? 'en' : 'ru')}>{lang === 'ru' ? 'RU' : 'EN'}</button>
             <div style={{ position: 'relative' }}>
               <button style={s.toggleBtn} onClick={() => setBgMenuOpen((v) => !v)} aria-label="background">{bgMeta.icon}</button>
@@ -1398,7 +1802,7 @@ function AppInner() {
 
       {screen === 'welcome' && (
         <div style={s.welcomeWrap}>
-          <div style={{ marginBottom: '1rem' }}><Brain3D size={140} /></div>
+          <div style={{ marginBottom: '1rem' }}><Brain size={140} /></div>
           <h1 style={s.welcomeTitle}>{t.welcomeTitle}</h1>
           <p style={s.welcomeSubtitle}>{t.welcomeSubtitle}</p>
           <button style={s.nextButton} onClick={() => { setWarmupStep(0); setWarmupCorrect(0); setWarmupAnswered(null); setScreen('warmup') }}>{t.start}</button>
@@ -1453,26 +1857,36 @@ function AppInner() {
           )}
           <p style={s.subtitle}>{t.chooseTopic}</p>
           <div style={s.gridTopics}>
-            {TOPIC_KEYS.map((key) => (
-              <button key={key} style={s.card} onClick={() => {
-                if (isTrialBlocked) { setScreen('paywall'); return }
-                setSelectedTopic(key); setScreen('difficulty')
-              }}>
-                {key === 'memory' ? <Brain3D size={40} /> : <div style={s.cardEmoji}>{TOPIC_EMOJI[key]}</div>}
-                <div style={s.cardLabel}>{t.topics[key]}</div>
-              </button>
-            ))}
+            {TOPIC_KEYS.map((key) => {
+              const gp = gameProfiles[key as ProfileTopic]
+              const rankInfo = gp && gp.points > 0 ? getGameRank(key as ProfileTopic, gp.points) : null
+              return (
+                <button key={key} style={s.card} onClick={() => {
+                  if (isTrialBlocked) { setScreen('paywall'); return }
+                  setSelectedTopic(key); setScreen('difficulty')
+                }}>
+                  {key === 'memory' ? <Brain size={40} /> : <div style={s.cardEmoji}>{TOPIC_EMOJI[key]}</div>}
+                  <div style={s.cardLabel}>{t.topics[key]}</div>
+                  {rankInfo && <div style={{ fontSize: '0.68rem', color: c.textSecondary }}>{rankInfo.rank.emoji} {rankInfo.rank.name}</div>}
+                </button>
+              )
+            })}
             {PREMIUM_TOPIC_KEYS.map((key) => {
               const unlocked = !!access?.subscription_active && !!access?.owns_premium_topics
+              const rankCaption = key === 'matrices'
+                ? (matrixProfile.points > 0 ? `${getRank(matrixProfile.points).rank.emoji} ${getRank(matrixProfile.points).rank.name}` : null)
+                : (averageWpm(readingProfile) > 0 ? `${getSpeedTier(averageWpm(readingProfile)).tier.emoji} ${getSpeedTier(averageWpm(readingProfile)).tier.name}` : null)
               return (
                 <div key={key} style={{ position: 'relative' }}>
                   <button style={{ ...s.card, width: '100%', border: `0.5px solid ${GOLD}` }} onClick={() => {
-                    if (!access?.subscription_active) { setScreen('paywall'); return }
-                    if (!access?.owns_premium_topics) { setScreen('premiumPurchase'); return }
+                    if (access === null) { showMessage(lang === 'ru' ? '⏳ Подключаюсь к серверу, попробуй ещё раз через секунду…' : '⏳ Connecting to the server, try again in a second…'); return }
+                    if (!access.subscription_active) { setScreen('paywall'); return }
+                    if (!access.owns_premium_topics) { setScreen('premiumPurchase'); return }
                     setSelectedTopic(key); setScreen('difficulty')
                   }}>
                     <div style={s.cardEmoji}>{TOPIC_EMOJI[key]}</div>
                     <div style={s.cardLabel}>{t.topics[key]}</div>
+                    {rankCaption && <div style={{ fontSize: '0.68rem', color: c.textSecondary }}>{rankCaption}</div>}
                   </button>
                   {!unlocked && <div style={{ position: 'absolute', top: '0.4rem', right: '0.4rem', fontSize: '0.9rem' }}>💎</div>}
                 </div>
@@ -1522,13 +1936,21 @@ function AppInner() {
       {screen === 'task' && selectedTopic === 'differences' && diffBoard && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={leaveTask}>{t.back}</button>
-          <p style={{ ...s.subtitle, marginTop: '3rem', marginBottom: '1rem' }}>{t.found}: {diffFound.length} / {diffBoard.diffCount}</p>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', margin: '3rem 0 0.75rem', position: 'relative', zIndex: 1 }}>
+            <span style={s.pill}>{t.found}: {diffFound.length} / {diffBoard.diffCount}</span>
+            <span style={s.pill}>{'❤️'.repeat(Math.max(0, diffLives))}{'🖤'.repeat(Math.max(0, 3 - diffLives))}</span>
+            {combo >= 2 && <span style={{ ...s.pill, color: GOLD, borderColor: GOLD }}>🔥 ×{combo}</span>}
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${diffBoard.size}, 1fr)`, gap: '4px', maxWidth: '380px', margin: '0 auto' }}>
             {diffBoard.cells.map((emoji, i) => {
               const found = diffFound.includes(i)
-              return <button key={i} className="diff-cell" style={{ fontSize: diffBoard.size === 8 ? '1.2rem' : diffBoard.size === 10 ? '1rem' : '0.85rem', borderColor: found ? GREEN : 'transparent', background: found ? 'rgba(34,197,94,0.12)' : 'transparent' }} onClick={() => tapDiffCell(i)}>{emoji}</button>
+              const isMiss = answerResult !== null && !answerResult.is_correct && diffBoard.diffPositions.has(i) && !found
+              return <button key={i} className="diff-cell" style={{ fontSize: diffBoard.size === 8 ? '1.2rem' : diffBoard.size === 10 ? '1rem' : '0.85rem', borderColor: found ? GREEN : isMiss ? RED : 'transparent', background: found ? 'rgba(34,197,94,0.12)' : isMiss ? 'rgba(239,68,68,0.12)' : 'transparent' }} onClick={() => tapDiffCell(i)} disabled={answerResult !== null}>{emoji}</button>
             })}
           </div>
+          {!answerResult && timeLeft !== null && (
+            <div style={s.timerTrack}><div key={String(task?.task_id)} style={{ ...s.timerFill, animation: `shrinkBar ${DIFF_TIME[selectedDifficulty ?? 2]}s linear forwards` }} /></div>
+          )}
           {answerResult && (
             <>
               {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
@@ -1546,15 +1968,10 @@ function AppInner() {
         </div>
       )}
 
-      {screen === 'task' && selectedTopic !== 'differences' && selectedTopic !== 'reading' && (
+      {screen === 'task' && selectedTopic === 'matrices' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={leaveTask}>{t.back}</button>
-          {loadError ? (
-            <div style={{ maxWidth: '320px', margin: '4rem auto 0' }}>
-              <p style={{ color: c.textSecondary, marginBottom: '1.5rem' }}>❌ {t.loadError}</p>
-              <button style={s.nextButton} onClick={() => selectedTopic && selectedDifficulty && loadTask(selectedTopic, selectedDifficulty)}>{t.retryBtn}</button>
-            </div>
-          ) : loading || !task ? (
+          {!task ? (
             <div style={{ maxWidth: '380px', margin: '3rem auto 0' }}>
               <Skeleton height="20px" width="80%" bg={c.skeletonBg} style={{ margin: '0 auto 12px' }} />
               <Skeleton height="20px" width="60%" bg={c.skeletonBg} style={{ margin: '0 auto 32px' }} />
@@ -1570,10 +1987,7 @@ function AppInner() {
                   {!answerResult && timeLeft !== null ? `⏱ ${t.timeLeftLabel}: ${timeLeft}` : ''}
                 </p>
               )}
-              {task.isColorTask && <p style={{ fontSize: '0.78rem', color: c.textSecondary, marginBottom: '0.5rem' }}>{t.colorInstruction}</p>}
-              <p style={{ ...s.question, marginBottom: task.cells ? '1rem' : s.question.marginBottom, color: task.isColorTask && !answerResult ? task.colorHex : c.text }}>
-                {selectedTopic === 'memory' ? getMemoryQuestionText() : task.question}
-              </p>
+              <p style={{ ...s.question, marginBottom: task.cells ? '1rem' : s.question.marginBottom }}>{task.question}</p>
               {task.cells && task.cols && (
                 <div style={s.matrixGrid}>
                   {task.cells.map((cell, i) => {
@@ -1587,24 +2001,19 @@ function AppInner() {
                   })}
                 </div>
               )}
-              {selectedTopic === 'memory' && !memoryHidden && !answerResult && (
-                <p style={{ fontSize: '0.78rem', color: c.textSecondary, marginTop: '-1.5rem', marginBottom: '1.5rem' }}>{t.memorizeHint}</p>
-              )}
-              {(selectedTopic !== 'memory' || memoryHidden || answerResult) && (
-                <div style={s.gridAnswers}>
-                  {task.options.map((opt) => {
-                    const isSelected = selectedAnswer === opt
-                    const showResult = answerResult !== null
-                    const isCorrectOption = showResult && opt === answerResult.correct_answer
-                    let style = { ...s.cardAnswer }
-                    let cls = ''
-                    if (showResult && isSelected && !isCorrectOption) { style = s.cardWrong; cls = 'wrong-shake' }
-                    else if (isCorrectOption) { style = s.cardCorrect; cls = 'correct-pop' }
-                    const optStyle: React.CSSProperties = task.cells ? { ...style, fontSize: cellFontSize(opt, 3), whiteSpace: 'pre-wrap', lineHeight: 1.15 } : style
-                    return <button key={opt} className={cls} style={optStyle} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
-                  })}
-                </div>
-              )}
+              <div style={s.gridAnswers}>
+                {task.options.map((opt) => {
+                  const isSelected = selectedAnswer === opt
+                  const showResult = answerResult !== null
+                  const isCorrectOption = showResult && opt === answerResult.correct_answer
+                  let style = { ...s.cardAnswer }
+                  let cls = ''
+                  if (showResult && isSelected && !isCorrectOption) { style = s.cardWrong; cls = 'wrong-shake' }
+                  else if (isCorrectOption) { style = s.cardCorrect; cls = 'correct-pop' }
+                  const optStyle: React.CSSProperties = task.cells ? { ...style, fontSize: cellFontSize(opt, 3), whiteSpace: 'pre-wrap', lineHeight: 1.15 } : style
+                  return <button key={opt} className={cls} style={optStyle} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
+                })}
+              </div>
               {answerResult && (
                 <>
                   {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
@@ -1618,14 +2027,22 @@ function AppInner() {
         </div>
       )}
 
+      {screen === 'task' && selectedTopic && isGameTopic(selectedTopic) && game && (
+        <div className="screen-anim">
+          <button style={s.backButton} onClick={leaveTask}>{t.back}</button>
+          {renderGame()}
+        </div>
+      )}
+
       {screen === 'summary' && selectedTopic && (
         <div className="screen-anim" style={s.welcomeWrap}>
           <div style={s.welcomeEmoji}>{seriesLog.filter((e) => e.ok).length === SERIES_LENGTH ? '🔥' : '💪'}</div>
           <h1 style={s.welcomeTitle}>{seriesLog.filter((e) => e.ok).length}/{SERIES_LENGTH} {t.correctOf}</h1>
-          <p style={{ ...s.welcomeSubtitle, marginBottom: seriesPerfect ? '0.6rem' : (selectedTopic === 'matrices' || selectedTopic === 'reading') ? '1.5rem' : '3rem' }}>{t.topics[selectedTopic]} — {t.seriesDone}</p>
-          {seriesPerfect && <p style={{ color: GOLD, fontSize: '0.85rem', margin: `0 0 ${selectedTopic === 'matrices' || selectedTopic === 'reading' ? '1.5rem' : '3rem'}` }}>💎 {lang === 'ru' ? `Идеальная серия! Всего таких: ${meta.perfectSeries}` : `Perfect series! Total: ${meta.perfectSeries}`}</p>}
+          <p style={{ ...s.welcomeSubtitle, marginBottom: seriesPerfect ? '0.6rem' : '1.5rem' }}>{t.topics[selectedTopic]} — {t.seriesDone}</p>
+          {seriesPerfect && <p style={{ color: GOLD, fontSize: '0.85rem', margin: '0 0 1.5rem' }}>💎 {lang === 'ru' ? `Идеальная серия! Всего таких: ${meta.perfectSeries}` : `Perfect series! Total: ${meta.perfectSeries}`}</p>}
           {selectedTopic === 'matrices' && renderMatrixSummary()}
           {selectedTopic === 'reading' && renderReadingSummary()}
+          {(isGameTopic(selectedTopic) || selectedTopic === 'differences') && renderGameSummary(selectedTopic as ProfileTopic)}
           <button style={s.nextButton} onClick={continueAfterSummary}>{t.continueBtn}</button>
         </div>
       )}
