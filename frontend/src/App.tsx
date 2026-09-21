@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import Brain3D from './Brain3D'
 import { generateMatrix, loadMatrixProfile, saveMatrixProfile, recordMatrixResult, getRank, analyzeProfile, kindLabel, PERFECT_SERIES_POINTS, FAST_BONUS_XP } from './matrices'
 import type { MatrixProfile } from './matrices'
+import { generateReading, loadReadingProfile, saveReadingProfile, recordReadingResult, averageWpm, getSpeedTier, readingKindLabel, analyzeReading, BONUS_XP as READING_BONUS_XP } from './reading'
+import type { ReadingProfile, ReadingTask } from './reading'
+import { ACHIEVEMENTS, ACHIEVEMENT_GROUPS, evaluateAchievements, loadMeta, saveMeta, loadSeenAchievements, saveSeenAchievements } from './achievements'
+import type { AchievementState, Meta } from './achievements'
 
 declare global {
   interface Window {
@@ -12,7 +17,7 @@ declare global {
 type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard' | 'paywall' | 'premiumPurchase' | 'invite'
 type Topic = 'memory' | 'attention' | 'logic' | 'math' | 'differences' | 'speed' | 'colors' | 'words' | 'matrices' | 'reading'
 type Difficulty = 1 | 2 | 3
-type Background = 'space' | 'black' | 'white'
+type Background = 'space' | 'black' | 'white' | 'aurora' | 'neural' | 'ocean' | 'sunset'
 type Lang = 'ru' | 'en'
 
 type Task = {
@@ -33,7 +38,8 @@ type Task = {
   xp?: number
   fastSeconds?: number
 }
-type SeriesEntry = { ok: boolean; ms: number; kind?: string }
+type SeriesEntry = { ok: boolean; ms: number; kind?: string; wpm?: number }
+type ReadPhase = 'intro' | 'show' | 'question'
 type AnswerResult = { is_correct: boolean; correct_answer: string; explanation: string; xp_earned: number }
 type UserStats = {
   current_streak: number
@@ -54,27 +60,8 @@ type AccessStatus = {
 }
 type ReferralStats = { referrals_count: number; days_earned: number; pending_count: number }
 
-type Achievement = {
-  id: string
-  emoji: string
-  title: { ru: string; en: string }
-  description: { ru: string; en: string }
-}
-
 type LeaderboardEntry = { user_id: number; username: string | null; total_xp: number; current_streak: number }
 type LeaderboardData = { top: LeaderboardEntry[]; my_rank: number | null }
-
-const ACHIEVEMENTS: Achievement[] = [
-  { id: 'streak_5', emoji: '🔥', title: { ru: '5 дней подряд', en: '5-day streak' }, description: { ru: 'Держи стрик 5 дней', en: 'Keep a 5-day streak' } },
-  { id: 'streak_10', emoji: '🔥', title: { ru: '10 дней подряд', en: '10-day streak' }, description: { ru: 'Держи стрик 10 дней', en: 'Keep a 10-day streak' } },
-  { id: 'streak_30', emoji: '🔥', title: { ru: '30 дней подряд', en: '30-day streak' }, description: { ru: 'Держи стрик 30 дней', en: 'Keep a 30-day streak' } },
-  { id: 'correct_50', emoji: '✅', title: { ru: '50 правильных', en: '50 correct' }, description: { ru: 'Ответь правильно 50 раз', en: 'Answer correctly 50 times' } },
-  { id: 'correct_100', emoji: '✅', title: { ru: '100 правильных', en: '100 correct' }, description: { ru: 'Ответь правильно 100 раз', en: 'Answer correctly 100 times' } },
-  { id: 'correct_250', emoji: '✅', title: { ru: '250 правильных', en: '250 correct' }, description: { ru: 'Ответь правильно 250 раз', en: 'Answer correctly 250 times' } },
-  { id: 'level_5', emoji: '⭐', title: { ru: '5 уровень', en: 'Level 5' }, description: { ru: 'Достигни 5 уровня', en: 'Reach level 5' } },
-  { id: 'level_10', emoji: '⭐', title: { ru: '10 уровень', en: 'Level 10' }, description: { ru: 'Достигни 10 уровня', en: 'Reach level 10' } },
-  { id: 'category_master', emoji: '🏅', title: { ru: 'Мастер темы', en: 'Topic master' }, description: { ru: '20 правильных в одной теме', en: '20 correct in one topic' } },
-]
 
 const TOPIC_KEYS: Topic[] = ['memory', 'attention', 'logic', 'math', 'differences', 'speed', 'colors', 'words']
 const PREMIUM_TOPIC_KEYS: Topic[] = ['matrices', 'reading']
@@ -86,8 +73,15 @@ const TOPIC_EMOJI: Record<Topic, string> = {
   matrices: '🔲', reading: '📖',
 }
 const DIFFICULTY_EMOJI: Record<Difficulty, string> = { 1: '🟢', 2: '🟡', 3: '🔴' }
-const BACKGROUND_ORDER: Background[] = ['space', 'black', 'white']
-const BACKGROUND_ICON: Record<Background, string> = { space: '🌌', black: '⚫', white: '⚪' }
+const BACKGROUNDS: { id: Background; icon: string; name: { ru: string; en: string }; swatch: string }[] = [
+  { id: 'space', icon: '🌌', name: { ru: 'Космос', en: 'Space' }, swatch: 'radial-gradient(circle at 30% 30%, #34348a, #0a0a12 70%)' },
+  { id: 'black', icon: '⚫', name: { ru: 'Чёрный', en: 'Black' }, swatch: '#0a0a12' },
+  { id: 'white', icon: '⚪', name: { ru: 'Белый', en: 'White' }, swatch: '#ffffff' },
+  { id: 'aurora', icon: '🌠', name: { ru: 'Северное сияние', en: 'Aurora' }, swatch: 'linear-gradient(135deg, #062a3a, #1fd39a 50%, #7a5cff)' },
+  { id: 'neural', icon: '🕸️', name: { ru: 'Нейросеть', en: 'Neural net' }, swatch: 'radial-gradient(circle at 50% 40%, #4d4dff, #070718 75%)' },
+  { id: 'ocean', icon: '🌊', name: { ru: 'Океан', en: 'Ocean' }, swatch: 'linear-gradient(180deg, #2a9fd6, #04304f 55%, #010b1c)' },
+  { id: 'sunset', icon: '🌆', name: { ru: 'Закат', en: 'Synthwave' }, swatch: 'linear-gradient(180deg, #2a0a4d, #c2307a 55%, #ffb36b)' },
+]
 const SERIES_LENGTH = 5
 
 const API_URL = 'https://neyronych-app.onrender.com'
@@ -251,18 +245,6 @@ function cellFontSize(text: string, cols: number): string {
   let size = longest <= 2 ? 1.6 : longest === 3 ? 1.35 : longest <= 5 ? 1.05 : 0.9
   if (cols >= 6) size = Math.min(size, 1.2)
   return `${size}rem`
-}
-
-const READING_BANK: Record<Difficulty, { passage: string; question: string; options: string[]; correct: string; explanation: string; readSeconds: number }[]> = {
-  1: [{ passage: 'Кот сидел на подоконнике и смотрел на дождь за окном. На улице было холодно, и он был рад, что находится дома в тепле.', question: 'Где сидел кот?', options: ['На диване', 'На подоконнике', 'В коробке', 'На столе'], correct: 'На подоконнике', explanation: 'В тексте прямо сказано: "сидел на подоконнике"', readSeconds: 8 }],
-  2: [{ passage: 'Экспедиция вышла на рассвете, чтобы успеть пересечь перевал до полудня, когда в горах обычно начинается сильный ветер и видимость резко падает.', question: 'Почему экспедиция вышла на рассвете?', options: ['Чтобы успеть пересечь перевал до ветра', 'Чтобы увидеть рассвет', 'Потому что так короче путь', 'Из-за холода ночью'], correct: 'Чтобы успеть пересечь перевал до ветра', explanation: 'Цель — пересечь перевал до полуденного ветра', readSeconds: 6 }],
-  3: [{ passage: 'Несмотря на то что первоначальный план предполагал запуск проекта в марте, команда приняла решение перенести дату на два месяца вперёд из-за задержек с поставкой оборудования.', question: 'На сколько месяцев перенесли запуск?', options: ['На один', 'На два', 'На три', 'Не перенесли'], correct: 'На два', explanation: 'В тексте: "перенести дату на два месяца вперёд"', readSeconds: 5 }],
-}
-
-function generateReadingTask(difficulty: Difficulty): Task {
-  const pool = READING_BANK[difficulty]
-  const picked = pool[rand(0, pool.length - 1)]
-  return { task_id: 'reading-' + Date.now(), question: picked.question, options: picked.options, correct: picked.correct, explanation: picked.explanation, passage: picked.passage, timeLimit: picked.readSeconds }
 }
 
 const I18N = {
@@ -453,6 +435,158 @@ function CelebrateFX({ xp }: { xp: number }) {
   )
 }
 
+class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError() { return { failed: true } }
+  componentDidCatch(err: unknown) { console.error('App crashed:', err) }
+  render() {
+    if (!this.state.failed) return this.props.children
+    return (
+      <div style={{ minHeight: '100vh', background: '#0a0a12', color: '#fff', fontFamily: '-apple-system, sans-serif', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '2rem' }}>
+        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🧠💥</div>
+        <h1 style={{ fontSize: '1.3rem', fontWeight: 500, margin: '0 0 0.5rem' }}>Что-то пошло не так</h1>
+        <p style={{ color: '#8a8aa0', fontSize: '0.9rem', margin: '0 0 1.75rem' }}>Something went wrong. Твой прогресс сохранён.</p>
+        <button style={{ background: NEON, border: 'none', borderRadius: '14px', padding: '0.85rem 1.5rem', color: '#fff', fontSize: '0.95rem', fontWeight: 500, cursor: 'pointer' }} onClick={() => window.location.reload()}>Перезапустить</button>
+      </div>
+    )
+  }
+}
+
+function isStats(d: unknown): d is UserStats {
+  const x = d as UserStats | null
+  return !!x && typeof x.total_xp === 'number' && typeof x.level === 'number' && Array.isArray(x.by_category)
+}
+
+// ───────── Фоны ─────────
+
+const BG_BASE: React.CSSProperties = { position: 'fixed', inset: 0, zIndex: -1, pointerEvents: 'none', overflow: 'hidden' }
+
+function AuroraBg() {
+  return (
+    <div style={{ ...BG_BASE, background: 'linear-gradient(180deg, #030a18 0%, #06162a 55%, #04101f 100%)' }}>
+      <div className="bg-blob bg-a1" />
+      <div className="bg-blob bg-a2" />
+      <div className="bg-blob bg-a3" />
+    </div>
+  )
+}
+
+function OceanBg() {
+  const [bubbles] = useState(() => Array.from({ length: 18 }, (_, i) => ({
+    id: i,
+    left: Math.random() * 100,
+    size: 6 + Math.random() * 16,
+    dur: 9 + Math.random() * 10,
+    delay: -Math.random() * 18,
+    sway: (Math.random() - 0.5) * 60,
+  })))
+  return (
+    <div style={{ ...BG_BASE, background: 'linear-gradient(180deg, #05507a 0%, #033659 32%, #021d38 65%, #010b1c 100%)' }}>
+      <div className="bg-ray" style={{ left: '8%', animationDelay: '0s' }} />
+      <div className="bg-ray" style={{ left: '38%', width: '30vw', animationDelay: '-3s' }} />
+      <div className="bg-ray" style={{ left: '72%', animationDelay: '-6s' }} />
+      {bubbles.map((b) => (
+        <span key={b.id} className="bg-bubble" style={{ left: `${b.left}%`, width: b.size, height: b.size, animationDuration: `${b.dur}s`, animationDelay: `${b.delay}s`, ['--sway' as any]: `${b.sway}px` }} />
+      ))}
+    </div>
+  )
+}
+
+function SunsetBg() {
+  return (
+    <div style={{ ...BG_BASE, background: 'linear-gradient(180deg, #12002b 0%, #3b0a5c 34%, #a3206b 58%, #ff6a5c 78%, #ffb36b 100%)' }}>
+      <div className="bg-sun" />
+      <div className="bg-floor" />
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(8,0,24,0.5), rgba(8,0,24,0.15) 55%, rgba(8,0,24,0.45))' }} />
+    </div>
+  )
+}
+
+function NeuralBg() {
+  const ref = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const canvas = ref.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const g = ctx
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    let w = 0, h = 0, raf = 0, last = 0, nextPulse = 0
+    const nodes = Array.from({ length: 48 }, () => ({
+      x: Math.random(), y: Math.random(),
+      vx: (Math.random() - 0.5) * 0.00006, vy: (Math.random() - 0.5) * 0.00006,
+      r: 1.3 + Math.random() * 1.9, gold: Math.random() < 0.2,
+    }))
+    const pulses: { a: number; b: number; t: number }[] = []
+    const resize = () => {
+      w = window.innerWidth; h = window.innerHeight
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr)
+      g.setTransform(dpr, 0, 0, dpr, 0, 0)
+    }
+    resize()
+    window.addEventListener('resize', resize)
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    const frame = (time: number) => {
+      const dt = Math.min(50, time - (last || time))
+      last = time
+      const link = Math.max(95, Math.min(150, Math.min(w, h) * 0.3))
+      g.clearRect(0, 0, w, h)
+      for (const n of nodes) {
+        n.x += n.vx * dt * (h / 700); n.y += n.vy * dt * (h / 700)
+        if (n.x < 0 || n.x > 1) n.vx *= -1
+        if (n.y < 0 || n.y > 1) n.vy *= -1
+      }
+      const near: number[][] = nodes.map(() => [])
+      g.lineWidth = 1
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const dx = (nodes[i].x - nodes[j].x) * w, dy = (nodes[i].y - nodes[j].y) * h
+          const d = Math.hypot(dx, dy)
+          if (d < link) {
+            near[i].push(j); near[j].push(i)
+            g.strokeStyle = `rgba(120,130,255,${(1 - d / link) * 0.4})`
+            g.beginPath(); g.moveTo(nodes[i].x * w, nodes[i].y * h); g.lineTo(nodes[j].x * w, nodes[j].y * h); g.stroke()
+          }
+        }
+      }
+      if (!reduce && time > nextPulse && pulses.length < 7) {
+        nextPulse = time + 350
+        const a = Math.floor(Math.random() * nodes.length)
+        if (near[a].length) pulses.push({ a, b: near[a][Math.floor(Math.random() * near[a].length)], t: 0 })
+      }
+      for (let k = pulses.length - 1; k >= 0; k--) {
+        const p = pulses[k]
+        p.t += dt / 900
+        if (p.t >= 1) { pulses.splice(k, 1); continue }
+        const x = (nodes[p.a].x + (nodes[p.b].x - nodes[p.a].x) * p.t) * w
+        const y = (nodes[p.a].y + (nodes[p.b].y - nodes[p.a].y) * p.t) * h
+        g.fillStyle = 'rgba(255,215,120,0.25)'; g.beginPath(); g.arc(x, y, 6, 0, Math.PI * 2); g.fill()
+        g.fillStyle = 'rgba(255,235,170,0.95)'; g.beginPath(); g.arc(x, y, 2.2, 0, Math.PI * 2); g.fill()
+      }
+      nodes.forEach((n, i) => {
+        const r = n.r * (1 + 0.25 * Math.sin(time / 700 + i))
+        g.fillStyle = n.gold ? 'rgba(255,200,80,0.18)' : 'rgba(120,130,255,0.18)'
+        g.beginPath(); g.arc(n.x * w, n.y * h, r * 3, 0, Math.PI * 2); g.fill()
+        g.fillStyle = n.gold ? 'rgba(255,200,80,0.95)' : 'rgba(170,175,255,0.95)'
+        g.beginPath(); g.arc(n.x * w, n.y * h, r, 0, Math.PI * 2); g.fill()
+      })
+      if (!reduce) raf = requestAnimationFrame(frame)
+    }
+    raf = requestAnimationFrame(frame)
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize) }
+  }, [])
+  return <canvas ref={ref} style={{ ...BG_BASE, width: '100%', height: '100%', background: 'radial-gradient(circle at 50% 30%, #12124a 0%, #070718 60%, #03030a 100%)' }} />
+}
+
+function BackgroundLayer({ kind }: { kind: Background }) {
+  if (kind === 'aurora') return <AuroraBg />
+  if (kind === 'ocean') return <OceanBg />
+  if (kind === 'sunset') return <SunsetBg />
+  if (kind === 'neural') return <NeuralBg />
+  return null
+}
+
 function formatTrialTime(totalSeconds: number): string {
   const days = Math.floor(totalSeconds / 86400)
   const hours = Math.floor((totalSeconds % 86400) / 3600)
@@ -463,7 +597,7 @@ function formatTrialTime(totalSeconds: number): string {
   return `${minutes}м ${seconds}с`
 }
 
-function App() {
+function AppInner() {
   const [screen, setScreen] = useState<Screen>('welcome')
   const [prevScreen, setPrevScreen] = useState<Screen>('topic')
   const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null)
@@ -474,7 +608,16 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [memoryHidden, setMemoryHidden] = useState(false)
-  const [readingHidden, setReadingHidden] = useState(false)
+  const [readTask, setReadTask] = useState<ReadingTask | null>(null)
+  const [readPhase, setReadPhase] = useState<ReadPhase>('intro')
+  const readStartRef = useRef<number>(0)
+  const readWpmRef = useRef<number | null>(null)
+  const seriesStartWpmRef = useRef<number>(0)
+  const [readingProfile, setReadingProfile] = useState<ReadingProfile>(loadReadingProfile)
+  const [meta, setMeta] = useState<Meta>(loadMeta)
+  const [toastQueue, setToastQueue] = useState<string[]>([])
+  const seenRef = useRef<string[] | null | undefined>(undefined)
+  const [bgMenuOpen, setBgMenuOpen] = useState(false)
   const [userId, setUserId] = useState<number | null>(null)
   const [seriesLog, setSeriesLog] = useState<SeriesEntry[]>([])
   const [matrixProfile, setMatrixProfile] = useState<MatrixProfile>(loadMatrixProfile)
@@ -482,8 +625,6 @@ function App() {
   const seriesStartPointsRef = useRef<number>(0)
   const [userStats, setUserStats] = useState<UserStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
-  const [unlockedAchievements, setUnlockedAchievements] = useState<string[]>([])
-  const [achievementsLoading, setAchievementsLoading] = useState(false)
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardData | null>(null)
   const [leaderboardLoading, setLeaderboardLoading] = useState(false)
   const [diffFound, setDiffFound] = useState<number[]>([])
@@ -496,7 +637,7 @@ function App() {
 
   const [background, setBackground] = useState<Background>(() => {
     const saved = localStorage.getItem('neyronych_background')
-    return saved === 'space' || saved === 'black' || saved === 'white' ? saved : 'space'
+    return BACKGROUNDS.some((b) => b.id === saved) ? (saved as Background) : 'space'
   })
   const [lang, setLang] = useState<Lang>(() => {
     const saved = localStorage.getItem('neyronych_lang')
@@ -511,9 +652,11 @@ function App() {
 
   const t = I18N[lang]
   const c = background === 'white' ? PALETTES.light : PALETTES.dark
+  const bgMeta = BACKGROUNDS.find((b) => b.id === background) ?? BACKGROUNDS[0]
 
   useEffect(() => { localStorage.setItem('neyronych_background', background) }, [background])
   useEffect(() => { localStorage.setItem('neyronych_lang', lang) }, [lang])
+  useEffect(() => { window.scrollTo(0, 0) }, [screen])
 
   useEffect(() => {
     const tg = window.Telegram?.WebApp
@@ -556,11 +699,6 @@ function App() {
   const haptic = (type: 'success' | 'error') => {
     const tg = window.Telegram?.WebApp
     tg?.HapticFeedback?.notificationOccurred(type)
-  }
-
-  const cycleBackground = () => {
-    const idx = BACKGROUND_ORDER.indexOf(background)
-    setBackground(BACKGROUND_ORDER[(idx + 1) % BACKGROUND_ORDER.length])
   }
 
   const openInvite = () => {
@@ -643,6 +781,7 @@ function App() {
   const resetSeries = () => {
     setSeriesLog([])
     seriesStartPointsRef.current = matrixProfile.points
+    seriesStartWpmRef.current = averageWpm(readingProfile)
   }
 
   const loadTask = (topic: Topic, difficulty: Difficulty) => {
@@ -654,7 +793,6 @@ function App() {
     setTimeLeft(null)
     setLoadError(false)
     setMemoryHidden(false)
-    setReadingHidden(false)
 
     if (topic === 'differences') {
       const board = generateDifferencesBoard(difficulty)
@@ -664,19 +802,24 @@ function App() {
       return
     }
 
+    if (topic === 'reading') {
+      const rt = generateReading(difficulty)
+      readWpmRef.current = null
+      setReadTask(rt)
+      setReadPhase('intro')
+      setTask({ task_id: 'reading-' + Date.now(), question: rt.question, options: shuffleArray(rt.options), correct: rt.correct, explanation: rt.explanation, kind: rt.kind, kindLabel: rt.kindLabel, level: difficulty, xp: rt.xp, fastSeconds: rt.fastSeconds })
+      setScreen('task')
+      return
+    }
+
     if (CLIENT_TOPICS.includes(topic)) {
       let generated: Task
       if (topic === 'speed') generated = generateSpeedTask(difficulty)
       else if (topic === 'colors') generated = generateColorsTask(difficulty, lang)
       else if (topic === 'words') generated = generateWordsTask(difficulty)
-      else if (topic === 'matrices') generated = generateMatricesTask(difficulty)
-      else generated = generateReadingTask(difficulty)
+      else generated = generateMatricesTask(difficulty)
       setTask({ ...generated, options: shuffleArray(generated.options) })
-      if (topic === 'reading') {
-        setTimeout(() => setReadingHidden(true), (generated.timeLimit || 6) * 1000)
-      } else {
-        setTimeLeft(generated.timeLimit || null)
-      }
+      setTimeLeft(generated.timeLimit || null)
       setScreen('task')
       return
     }
@@ -694,12 +837,45 @@ function App() {
   }
 
   useEffect(() => {
-    if (timeLeft === null || answerResult) return
+    if (timeLeft === null || answerResult || screen !== 'task') return
     if (timeLeft <= 0) { submitAnswer(''); return }
     const id = setTimeout(() => setTimeLeft((v) => (v !== null ? v - 1 : null)), 1000)
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeLeft, answerResult])
+  }, [timeLeft, answerResult, screen])
+
+  // Скорочтение: текст / вспышка сами исчезают по таймеру и открывают вопрос
+  useEffect(() => {
+    if (screen !== 'task' || selectedTopic !== 'reading' || !readTask || readPhase !== 'show' || readTask.mode === 'scan') return
+    const ms = readTask.mode === 'read' ? (readTask.readSeconds ?? 10) * 1000 : (readTask.showMs ?? 1500)
+    const id = setTimeout(() => finishShow(false), ms)
+    return () => clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, selectedTopic, readTask, readPhase])
+
+  const startReading = () => {
+    if (!readTask) return
+    readStartRef.current = Date.now()
+    taskStartRef.current = Date.now()
+    setReadPhase('show')
+    if (readTask.mode === 'scan') setTimeLeft(readTask.timeLimit ?? 12)
+  }
+
+  const finishShow = (manual: boolean) => {
+    if (!readTask) return
+    if (readTask.mode === 'read') {
+      const words = readTask.wordCount ?? 0
+      const ms = manual ? Math.max(1000, Date.now() - readStartRef.current) : (readTask.readSeconds ?? 10) * 1000
+      readWpmRef.current = Math.min(700, Math.round(words / (ms / 60000)))
+    }
+    taskStartRef.current = Date.now()
+    setReadPhase('question')
+  }
+
+  const leaveTask = () => {
+    setTimeLeft(null)
+    setScreen('difficulty')
+  }
 
   const submitAnswer = (opt: string) => {
     if (!task || !selectedTopic || selectedAnswer !== null) return
@@ -709,17 +885,48 @@ function App() {
       const isCorrect = opt === task.correct
       const elapsedMs = Date.now() - taskStartRef.current
       const isMatrix = selectedTopic === 'matrices' && !!task.kind && !!task.level
-      const fast = isMatrix && isCorrect && elapsedMs <= (task.fastSeconds ?? 0) * 1000
-      const xp = isCorrect ? (task.xp ?? 10) + (fast ? FAST_BONUS_XP : 0) : 0
-      const explanation = (task.explanation || '') + (fast ? `\n⚡ Быстрый ответ: +${FAST_BONUS_XP} XP` : '')
+      const isReading = selectedTopic === 'reading' && !!readTask && !!task.kind && !!task.level
+      let bonus = 0
+      let note = ''
+      let wpm: number | null = null
+      if (isMatrix && isCorrect && elapsedMs <= (task.fastSeconds ?? 0) * 1000) {
+        bonus = FAST_BONUS_XP
+        note = `\n⚡ Быстрый ответ: +${FAST_BONUS_XP} XP`
+      }
+      if (isReading && readTask) {
+        if (readTask.mode === 'read') {
+          wpm = readWpmRef.current
+          if (wpm !== null) {
+            note = `\n📖 Скорость чтения: ${wpm} слов/мин`
+            if (isCorrect && readTask.targetWpm && wpm >= readTask.targetWpm) {
+              bonus = READING_BONUS_XP
+              note += ` — выше цели (${readTask.targetWpm})! +${READING_BONUS_XP} XP`
+            } else if (readTask.targetWpm) {
+              note += ` (цель — ${readTask.targetWpm})`
+            }
+          }
+        } else if (isCorrect && elapsedMs <= readTask.fastSeconds * 1000) {
+          bonus = READING_BONUS_XP
+          note = `\n⚡ Быстрый ответ: +${READING_BONUS_XP} XP`
+        }
+      }
+      const xp = isCorrect ? (task.xp ?? 10) + bonus : 0
+      const explanation = (task.explanation || '') + note
       const result: AnswerResult = { is_correct: isCorrect, correct_answer: task.correct || '', explanation, xp_earned: xp }
       setAnswerResult(result)
       haptic(isCorrect ? 'success' : 'error')
-      setSeriesLog((prev) => [...prev, { ok: isCorrect, ms: elapsedMs, kind: task.kind }])
+      setSeriesLog((prev) => [...prev, { ok: isCorrect, ms: elapsedMs, kind: task.kind, wpm: isCorrect && wpm !== null ? wpm : undefined }])
       if (isMatrix) {
         setMatrixProfile((prev) => {
-          const next = recordMatrixResult(prev, task.kind as string, task.level as Difficulty, isCorrect, fast)
+          const next = recordMatrixResult(prev, task.kind as string, task.level as Difficulty, isCorrect, bonus > 0)
           saveMatrixProfile(next)
+          return next
+        })
+      }
+      if (isReading) {
+        setReadingProfile((prev) => {
+          const next = recordReadingResult(prev, task.kind as string, isCorrect, wpm)
+          saveReadingProfile(next)
           return next
         })
       }
@@ -770,10 +977,15 @@ function App() {
   const handleNext = () => {
     if (!selectedTopic || !selectedDifficulty) return
     if (seriesLog.length >= SERIES_LENGTH) {
-      if (selectedTopic === 'matrices' && seriesLog.every((e) => e.ok)) {
-        const next = { ...matrixProfile, points: matrixProfile.points + PERFECT_SERIES_POINTS }
-        setMatrixProfile(next)
-        saveMatrixProfile(next)
+      if (seriesLog.every((e) => e.ok)) {
+        if (selectedTopic === 'matrices') {
+          const next = { ...matrixProfile, points: matrixProfile.points + PERFECT_SERIES_POINTS }
+          setMatrixProfile(next)
+          saveMatrixProfile(next)
+        }
+        const nextMeta = { ...meta, perfectSeries: meta.perfectSeries + 1 }
+        setMeta(nextMeta)
+        saveMeta(nextMeta)
       }
       setScreen('summary')
     } else loadTask(selectedTopic, selectedDifficulty)
@@ -786,7 +998,7 @@ function App() {
   }
 
   const fetchTopBarStats = (uid: number) => {
-    fetch(`${API_URL}/api/stats/${uid}`).then((res) => res.json()).then((data: UserStats) => setUserStats(data)).catch(() => {})
+    fetch(`${API_URL}/api/stats/${uid}`).then((res) => res.json()).then((data) => { if (isStats(data)) setUserStats(data) }).catch(() => {})
   }
 
   useEffect(() => {
@@ -797,19 +1009,18 @@ function App() {
   const openStats = () => {
     const uid = userId ?? 0
     setPrevScreen(screen); setScreen('stats'); setStatsLoading(true)
-    fetch(`${API_URL}/api/stats/${uid}`).then((res) => res.json()).then((data: UserStats) => { setUserStats(data); setStatsLoading(false) }).catch(() => setStatsLoading(false))
+    fetch(`${API_URL}/api/stats/${uid}`).then((res) => res.json()).then((data) => { if (isStats(data)) setUserStats(data); setStatsLoading(false) }).catch(() => setStatsLoading(false))
   }
 
   const openAchievements = () => {
-    const uid = userId ?? 0
-    setScreen('achievements'); setAchievementsLoading(true)
-    fetch(`${API_URL}/api/achievements/${uid}`).then((res) => res.json()).then((data: { unlocked: string[] }) => { setUnlockedAchievements(data.unlocked); setAchievementsLoading(false) }).catch(() => setAchievementsLoading(false))
+    setScreen('achievements')
+    if (userId !== null) fetchTopBarStats(userId)
   }
 
   const openLeaderboard = () => {
     setScreen('leaderboard'); setLeaderboardLoading(true)
     const uid = userId ?? 0
-    fetch(`${API_URL}/api/leaderboard?user_id=${uid}`).then((res) => res.json()).then((data: LeaderboardData) => { setLeaderboardData(data); setLeaderboardLoading(false) }).catch(() => setLeaderboardLoading(false))
+    fetch(`${API_URL}/api/leaderboard?user_id=${uid}`).then((res) => res.json()).then((data: LeaderboardData) => { if (data && Array.isArray(data.top)) setLeaderboardData(data); setLeaderboardLoading(false) }).catch(() => setLeaderboardLoading(false))
   }
 
   const answerWarmup = (opt: string) => {
@@ -833,6 +1044,43 @@ function App() {
   }
 
   const s = getStyles(c)
+
+  // Достижения считаются здесь, на телефоне — без запросов к серверу
+  let achStates: AchievementState[] = []
+  try {
+    achStates = evaluateAchievements({ stats: userStats, matrix: matrixProfile, reading: readingProfile, meta })
+  } catch { achStates = [] }
+  const unlockedKey = achStates.filter((a) => a.unlocked).map((a) => a.def.id).join(',')
+  const hasStats = userStats !== null
+
+  useEffect(() => {
+    if (!hasStats) return
+    if (seenRef.current === undefined) seenRef.current = loadSeenAchievements()
+    const ids = unlockedKey ? unlockedKey.split(',') : []
+    const seen = seenRef.current
+    if (seen === null || seen === undefined) {
+      // первый запуск: то, что уже получено раньше, «новым» не считаем
+      seenRef.current = ids
+      saveSeenAchievements(ids)
+      return
+    }
+    const fresh = ids.filter((id) => !seen.includes(id))
+    if (fresh.length > 0) {
+      seenRef.current = [...seen, ...fresh]
+      saveSeenAchievements(seenRef.current)
+      setToastQueue((q) => [...q, ...fresh])
+      haptic('success')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlockedKey, hasStats])
+
+  useEffect(() => {
+    if (toastQueue.length === 0) return
+    const id = setTimeout(() => setToastQueue((q) => q.slice(1)), 3800)
+    return () => clearTimeout(id)
+  }, [toastQueue])
+
+  const toastDef = toastQueue.length > 0 ? ACHIEVEMENTS.find((a) => a.id === toastQueue[0]) : undefined
 
   const renderMatrixSummary = () => {
     const info = getRank(matrixProfile.points)
@@ -865,6 +1113,204 @@ function App() {
     )
   }
 
+  const seriesPerfect = seriesLog.length >= SERIES_LENGTH && seriesLog.every((e) => e.ok)
+
+  const renderReadingSummary = () => {
+    const avg = averageWpm(readingProfile)
+    const info = getSpeedTier(avg)
+    const startInfo = getSpeedTier(seriesStartWpmRef.current)
+    const tierUp = avg > 0 && info.tier.min > startInfo.tier.min
+    const wpms = seriesLog.filter((e) => e.wpm).map((e) => e.wpm as number)
+    const seriesAvg = wpms.length ? Math.round(wpms.reduce((a, b) => a + b, 0) / wpms.length) : 0
+    const analysis = analyzeReading(readingProfile)
+    const need = Math.max(0, 3 - readingProfile.recent.length)
+    return (
+      <div style={s.statsWrap}>
+        <div style={{ ...s.streakCard, marginBottom: '1rem' }}>
+          <div style={{ fontSize: '2rem', marginBottom: '0.25rem' }}>{info.tier.emoji}</div>
+          <div style={{ fontSize: '1.05rem', fontWeight: 500 }}>Скорость чтения: {info.tier.name}</div>
+          {tierUp && <div style={{ color: GREEN, fontSize: '0.85rem', marginTop: '0.25rem' }}>🎉 Новый уровень!</div>}
+          <div style={{ fontSize: '1.7rem', fontWeight: 600, margin: '0.5rem 0 0.4rem' }}>{avg > 0 ? avg : '—'} <span style={{ fontSize: '0.85rem', fontWeight: 400, color: c.textSecondary }}>слов/мин</span></div>
+          <div style={{ ...s.levelBarTrack, margin: '0.5rem 0 0.4rem' }}><div style={{ ...s.levelBarFill, width: `${avg > 0 ? info.progressPct : 0}%` }} /></div>
+          <div style={{ fontSize: '0.78rem', color: c.textSecondary }}>
+            {avg > 0
+              ? (info.next ? `до «${info.next.name}»: ещё ${info.toNext} слов/мин` : 'максимальный уровень')
+              : `Прочитай ещё ${need} ${need === 1 ? 'текст' : 'текста'} — и я измерю твою скорость`}
+          </div>
+          {seriesAvg > 0 && <div style={{ fontSize: '0.78rem', color: c.textSecondary, marginTop: '0.4rem' }}>В этой серии: {seriesAvg} слов/мин</div>}
+          {readingProfile.peakWpm > 0 && <div style={{ fontSize: '0.78rem', color: GOLD, marginTop: '0.25rem' }}>🏆 Рекорд: {readingProfile.peakWpm} слов/мин</div>}
+        </div>
+        <div style={{ ...s.categoryList, marginBottom: '1rem' }}>
+          {seriesLog.map((e, i) => (
+            <div key={i} style={s.categoryRow}>
+              <span>{e.ok ? '✅' : '❌'} {e.kind ? readingKindLabel(e.kind) : ''}</span>
+              <span style={{ color: c.textSecondary }}>{e.wpm ? `${e.wpm} сл/мин` : `${Math.max(1, Math.round(e.ms / 1000))} с`}</span>
+            </div>
+          ))}
+        </div>
+        {analysis.best && <p style={{ fontSize: '0.85rem', color: c.textSecondary, marginBottom: '0.4rem' }}>💪 Сильная сторона: {analysis.best.label} — {analysis.best.pct}%</p>}
+        {analysis.worst && <p style={{ fontSize: '0.85rem', color: c.textSecondary, marginBottom: '0.4rem' }}>🎯 Стоит подтянуть: {analysis.worst.label} — {analysis.worst.pct}%</p>}
+      </div>
+    )
+  }
+
+  const renderReading = () => {
+    if (!readTask || !task) return null
+    const rt = readTask
+    const step = Math.min(SERIES_LENGTH, answerResult ? seriesLog.length : seriesLog.length + 1)
+    const badge = (
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', margin: '3rem 0 1.25rem', position: 'relative', zIndex: 1 }}>
+        <span style={s.pill}>{rt.kindLabel}</span>
+        <span style={s.pill}>{DIFFICULTY_EMOJI[rt.level]} {step}/{SERIES_LENGTH}</span>
+      </div>
+    )
+    const resultBlock = answerResult && (
+      <>
+        {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
+        <p style={s.explanation}>{answerResult.explanation}</p>
+        <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
+      </>
+    )
+
+    if (readPhase === 'intro') {
+      return (
+        <>
+          {badge}
+          <div style={{ ...s.readCard, textAlign: 'center' }}>
+            <p style={{ margin: 0, lineHeight: 1.55, fontSize: '0.95rem' }}>{rt.intro}</p>
+            {rt.mode === 'read' && rt.targetWpm && (
+              <p style={{ margin: '0.9rem 0 0', fontSize: '0.8rem', color: c.textSecondary }}>{rt.wordCount} слов · цель: {rt.targetWpm} слов/мин</p>
+            )}
+          </div>
+          <button style={s.nextButton} onClick={startReading}>{lang === 'ru' ? 'Поехали' : 'Go'}</button>
+        </>
+      )
+    }
+
+    if (rt.mode === 'scan') {
+      const cols = rt.cols ?? 4
+      return (
+        <>
+          {badge}
+          <p style={{ fontSize: '0.8rem', fontWeight: 500, margin: '0 0 0.5rem', minHeight: '1.1em', color: !answerResult && timeLeft !== null && timeLeft <= 3 ? RED : c.textSecondary }}>
+            {!answerResult && timeLeft !== null ? `⏱ ${t.timeLeftLabel}: ${timeLeft}` : ''}
+          </p>
+          <p style={{ ...s.question, margin: '0 0 1rem' }}>{rt.question} <span style={{ color: c.textSecondary, fontSize: '0.8rem' }}>— {lang === 'ru' ? 'тапни по нему' : 'tap it'}</span></p>
+          <div style={s.matrixGrid}>
+            {(rt.words ?? []).map((w, i) => {
+              const isDup = answerResult !== null && w === rt.correct
+              const isWrongPick = answerResult !== null && selectedAnswer === w && w !== rt.correct
+              let extra: React.CSSProperties = {}
+              if (isDup) extra = { background: 'rgba(34, 197, 94, 0.18)', border: `0.5px solid ${GREEN}` }
+              else if (isWrongPick) extra = { background: 'rgba(239, 68, 68, 0.18)', border: `0.5px solid ${RED}` }
+              return (
+                <button key={i} disabled={selectedAnswer !== null} onClick={() => submitAnswer(w)}
+                  style={{ ...s.matrixCell, fontFamily: 'inherit', cursor: 'pointer', width: `calc(${100 / cols}% - 6px)`, fontSize: cols >= 4 ? '0.88rem' : '1rem', ...extra }}>{w}</button>
+              )
+            })}
+          </div>
+          {!answerResult && (
+            <div style={s.timerTrack}>
+              <div key={String(task.task_id)} style={{ ...s.timerFill, animation: `shrinkBar ${rt.timeLimit ?? 12}s linear forwards` }} />
+            </div>
+          )}
+          {resultBlock}
+        </>
+      )
+    }
+
+    if (readPhase === 'show') {
+      if (rt.mode === 'read') {
+        return (
+          <>
+            {badge}
+            <div style={{ ...s.readCard, textAlign: 'left', fontSize: '1.05rem', lineHeight: 1.7 }}>{rt.passage}</div>
+            <div style={s.timerTrack}>
+              <div key={String(task.task_id)} style={{ ...s.timerFill, animation: `shrinkBar ${rt.readSeconds ?? 10}s linear forwards` }} />
+            </div>
+            <button style={s.nextButton} onClick={() => finishShow(true)}>{lang === 'ru' ? 'Прочитал ✓' : 'Done reading ✓'}</button>
+          </>
+        )
+      }
+      const digits = rt.kind === 'digits'
+      return (
+        <>
+          {badge}
+          <div style={{ ...s.readCard, padding: '2.4rem 1rem', fontSize: digits ? '2.3rem' : '1.55rem', fontWeight: 600, letterSpacing: digits ? '0.06em' : 0, lineHeight: 1.4 }}>{rt.passage}</div>
+        </>
+      )
+    }
+
+    // вопрос (чтение и вспышки)
+    return (
+      <>
+        {badge}
+        <p style={{ fontSize: '0.78rem', color: c.textSecondary, margin: '0 0 0.6rem', position: 'relative', zIndex: 1 }}>{rt.mode === 'read' ? '📖 Текст скрыт' : '👁 Вспышка закончилась'}</p>
+        <p style={s.question}>{rt.question}</p>
+        <div style={s.gridAnswers}>
+          {task.options.map((opt) => {
+            const isSelected = selectedAnswer === opt
+            const showResult = answerResult !== null
+            const isCorrectOption = showResult && opt === answerResult.correct_answer
+            let style = { ...s.cardAnswer }
+            let cls = ''
+            if (showResult && isSelected && !isCorrectOption) { style = s.cardWrong; cls = 'wrong-shake' }
+            else if (isCorrectOption) { style = s.cardCorrect; cls = 'correct-pop' }
+            return <button key={opt} className={cls} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
+          })}
+        </div>
+        {resultBlock}
+      </>
+    )
+  }
+
+  const renderAchievements = () => {
+    const total = achStates.length
+    const done = achStates.filter((a) => a.unlocked).length
+    return (
+      <>
+        <div style={{ ...s.streakCard, maxWidth: '380px', margin: '0 auto 1.5rem', position: 'relative', zIndex: 1 }}>
+          <div style={{ fontSize: '1.4rem', fontWeight: 500 }}>🏅 {done} / {total}</div>
+          <div style={{ ...s.levelBarTrack, margin: '0.7rem 1rem 0' }}><div style={{ ...s.levelBarFill, width: `${total ? (done / total) * 100 : 0}%` }} /></div>
+        </div>
+        {!userStats && (
+          <p style={{ fontSize: '0.78rem', color: c.textSecondary, margin: '-0.5rem 0 1.25rem', position: 'relative', zIndex: 1 }}>
+            {lang === 'ru' ? 'Не удалось загрузить общую статистику — часть прогресса может показываться нулевой.' : 'Could not load overall stats — some progress may show as zero.'}
+          </p>
+        )}
+        {ACHIEVEMENT_GROUPS.map((g) => {
+          const items = achStates.filter((a) => a.def.group === g.id)
+          if (items.length === 0) return null
+          const groupDone = items.filter((a) => a.unlocked).length
+          return (
+            <div key={g.id} style={{ maxWidth: '380px', margin: '0 auto 1.4rem', position: 'relative', zIndex: 1 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: c.textSecondary, marginBottom: '0.55rem', fontWeight: 500, letterSpacing: '0.03em' }}>
+                <span>{g.title[lang].toUpperCase()}</span><span>{groupDone}/{items.length}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem' }}>
+                {items.map((a) => (
+                  <div key={a.def.id} style={a.unlocked ? s.achievementCardUnlocked : s.achievementCardLocked}>
+                    <div style={{ fontSize: '1.6rem', filter: a.unlocked ? 'none' : 'grayscale(1)', opacity: a.unlocked ? 1 : 0.45 }}>{a.def.emoji}</div>
+                    <div style={{ fontWeight: 500, fontSize: '0.85rem', marginTop: '0.4rem' }}>{a.def.title[lang]}</div>
+                    <div style={{ fontSize: '0.72rem', color: c.textSecondary, marginTop: '0.2rem', lineHeight: 1.35 }}>{a.def.description[lang]}</div>
+                    {a.unlocked ? (
+                      <div style={{ fontSize: '0.72rem', color: GREEN, marginTop: '0.5rem' }}>✓ {lang === 'ru' ? 'Получено' : 'Unlocked'}</div>
+                    ) : (
+                      <>
+                        <div style={{ ...s.levelBarTrack, height: '4px', marginTop: '0.55rem' }}><div style={{ ...s.levelBarFill, width: `${a.pct}%` }} /></div>
+                        <div style={{ fontSize: '0.7rem', color: c.textSecondary, marginTop: '0.3rem' }}>{Math.min(a.value, a.def.target)} / {a.def.target}</div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </>
+    )
+  }
+
   const getMemoryQuestionText = (): string => {
     if (!task) return ''
     if (!answerResult) {
@@ -894,15 +1340,60 @@ function App() {
         .xp-fly { animation: xpFly 1s ease-out forwards; }
         @keyframes confettiBurst { 0% { transform: translate(0,0) scale(1); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) scale(0); opacity: 0; } }
         .confetti-dot { position: absolute; width: 7px; height: 7px; border-radius: 50%; animation: confettiBurst 0.6s ease-out forwards; }
+        @keyframes shrinkBar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+        @keyframes toastIn { from { opacity: 0; transform: translate(-50%, -18px); } to { opacity: 1; transform: translate(-50%, 0); } }
+        .toast-in { animation: toastIn 0.35s ease-out; }
+        .bg-blob { position: absolute; border-radius: 50%; will-change: transform; }
+        .bg-a1 { width: 130vmax; height: 70vmax; left: -40vmax; top: -25vmax; background: radial-gradient(closest-side, rgba(34,230,160,0.42), rgba(34,230,160,0)); animation: auroraA 16s ease-in-out infinite alternate; }
+        .bg-a2 { width: 110vmax; height: 60vmax; right: -45vmax; top: 5vmax; background: radial-gradient(closest-side, rgba(130,90,255,0.42), rgba(130,90,255,0)); animation: auroraB 21s ease-in-out infinite alternate; }
+        .bg-a3 { width: 100vmax; height: 50vmax; left: -20vmax; bottom: -22vmax; background: radial-gradient(closest-side, rgba(40,190,255,0.3), rgba(40,190,255,0)); animation: auroraC 26s ease-in-out infinite alternate; }
+        @keyframes auroraA { from { transform: translate3d(0, 0, 0) scale(1) rotate(-8deg); } to { transform: translate3d(20vmax, 14vmax, 0) scale(1.25) rotate(10deg); } }
+        @keyframes auroraB { from { transform: translate3d(0, 0, 0) scale(1.1) rotate(6deg); } to { transform: translate3d(-24vmax, 10vmax, 0) scale(0.9) rotate(-12deg); } }
+        @keyframes auroraC { from { transform: translate3d(0, 0, 0) scale(1); } to { transform: translate3d(26vmax, -12vmax, 0) scale(1.2); } }
+        .bg-ray { position: absolute; top: -10%; width: 20vw; height: 120%; background: linear-gradient(180deg, rgba(150,225,255,0.22), rgba(150,225,255,0) 75%); transform-origin: top; transform: skewX(-18deg); animation: raySway 10s ease-in-out infinite alternate; }
+        @keyframes raySway { from { transform: skewX(-24deg); opacity: 0.45; } to { transform: skewX(-8deg); opacity: 1; } }
+        .bg-bubble { position: absolute; bottom: -40px; border-radius: 50%; border: 1px solid rgba(180,235,255,0.4); background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.3), rgba(255,255,255,0.03)); animation: bubbleRise linear infinite; }
+        @keyframes bubbleRise { 0% { transform: translate(0, 0); opacity: 0; } 10% { opacity: 0.9; } 100% { transform: translate(var(--sway, 20px), -115vh); opacity: 0; } }
+        .bg-sun { position: absolute; left: 50%; bottom: 15%; width: min(58vw, 230px); aspect-ratio: 1; transform: translateX(-50%); border-radius: 50%; background: linear-gradient(180deg, #fff08a 0%, #ff9b5e 45%, #ff2e88 100%); opacity: 0.7; -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 50%, transparent 50%, transparent 55%, #000 55%, #000 64%, transparent 64%, transparent 71%, #000 71%, #000 79%, transparent 79%, transparent 87%, #000 87%); mask-image: linear-gradient(180deg, #000 0%, #000 50%, transparent 50%, transparent 55%, #000 55%, #000 64%, transparent 64%, transparent 71%, #000 71%, #000 79%, transparent 79%, transparent 87%, #000 87%); }
+        .bg-floor { position: absolute; left: -40%; right: -40%; bottom: 0; height: 46%; background: linear-gradient(rgba(255,110,220,0.6) 2px, transparent 2px) 0 0 / 100% 46px, linear-gradient(90deg, rgba(255,110,220,0.6) 2px, transparent 2px) 0 0 / 70px 100%, linear-gradient(180deg, #24004a, #12002b); transform: perspective(300px) rotateX(62deg); transform-origin: 50% 100%; animation: gridMove 1.8s linear infinite; }
+        @keyframes gridMove { from { background-position: 0 0, 0 0, 0 0; } to { background-position: 0 46px, 0 0, 0 0; } }
+        @media (prefers-reduced-motion: reduce) { .bg-blob, .bg-ray, .bg-bubble, .bg-floor { animation: none; } }
       `}</style>
 
+      <BackgroundLayer kind={background} />
       {background === 'space' && <StarField />}
 
-      {screen !== 'welcome' && (
-        <div style={s.topControls}>
-          <button style={s.toggleBtn} onClick={() => setLang(lang === 'ru' ? 'en' : 'ru')}>{lang === 'ru' ? 'RU' : 'EN'}</button>
-          <button style={s.toggleBtn} onClick={cycleBackground}>{BACKGROUND_ICON[background]}</button>
+      {toastDef && (
+        <div key={toastDef.id} className="toast-in" style={s.toast} onClick={() => setToastQueue((q) => q.slice(1))}>
+          <div style={{ fontSize: '1.9rem' }}>{toastDef.emoji}</div>
+          <div style={{ textAlign: 'left' }}>
+            <div style={{ fontSize: '0.66rem', color: GOLD, fontWeight: 600, letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>{lang === 'ru' ? 'ДОСТИЖЕНИЕ ПОЛУЧЕНО' : 'ACHIEVEMENT UNLOCKED'}</div>
+            <div style={{ fontSize: '0.95rem', fontWeight: 500, marginTop: '0.1rem' }}>{toastDef.title[lang]}</div>
+          </div>
         </div>
+      )}
+
+      {screen !== 'welcome' && (
+        <>
+          {bgMenuOpen && <div style={{ position: 'fixed', inset: 0, zIndex: 5 }} onClick={() => setBgMenuOpen(false)} />}
+          <div style={s.topControls}>
+            <button style={s.toggleBtn} onClick={() => setLang(lang === 'ru' ? 'en' : 'ru')}>{lang === 'ru' ? 'RU' : 'EN'}</button>
+            <div style={{ position: 'relative' }}>
+              <button style={s.toggleBtn} onClick={() => setBgMenuOpen((v) => !v)} aria-label="background">{bgMeta.icon}</button>
+              {bgMenuOpen && (
+                <div style={s.bgMenu}>
+                  {BACKGROUNDS.map((b) => (
+                    <button key={b.id} style={{ ...s.bgRow, borderColor: b.id === background ? NEON : 'transparent' }} onClick={() => { setBackground(b.id); setBgMenuOpen(false) }}>
+                      <span style={{ width: '26px', height: '26px', borderRadius: '50%', background: b.swatch, border: '1px solid rgba(128,128,128,0.45)', flexShrink: 0 }} />
+                      <span>{b.name[lang]}</span>
+                      {b.id === background && <span style={{ marginLeft: 'auto', color: NEON }}>✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
       )}
 
       {screen === 'welcome' && (
@@ -1030,7 +1521,7 @@ function App() {
 
       {screen === 'task' && selectedTopic === 'differences' && diffBoard && (
         <div className="screen-anim">
-          <button style={s.backButton} onClick={() => setScreen('difficulty')}>{t.back}</button>
+          <button style={s.backButton} onClick={leaveTask}>{t.back}</button>
           <p style={{ ...s.subtitle, marginTop: '3rem', marginBottom: '1rem' }}>{t.found}: {diffFound.length} / {diffBoard.diffCount}</p>
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${diffBoard.size}, 1fr)`, gap: '4px', maxWidth: '380px', margin: '0 auto' }}>
             {diffBoard.cells.map((emoji, i) => {
@@ -1048,44 +1539,16 @@ function App() {
         </div>
       )}
 
-      {screen === 'task' && selectedTopic === 'reading' && task && (
+      {screen === 'task' && selectedTopic === 'reading' && task && readTask && (
         <div className="screen-anim">
-          <button style={s.backButton} onClick={() => setScreen('difficulty')}>{t.back}</button>
-          {!readingHidden && !answerResult ? (
-            <>
-              <p style={{ ...s.question, marginTop: '3rem' }}>{task.passage}</p>
-              <p style={{ fontSize: '0.78rem', color: c.textSecondary }}>{t.passageHiddenHint}</p>
-            </>
-          ) : (
-            <>
-              <p style={s.question}>{task.question}</p>
-              <div style={s.gridAnswers}>
-                {task.options.map((opt) => {
-                  const isSelected = selectedAnswer === opt
-                  const showResult = answerResult !== null
-                  const isCorrectOption = showResult && opt === answerResult.correct_answer
-                  let style = { ...s.cardAnswer }
-                  let cls = ''
-                  if (showResult && isSelected && !isCorrectOption) { style = s.cardWrong; cls = 'wrong-shake' }
-                  else if (isCorrectOption) { style = s.cardCorrect; cls = 'correct-pop' }
-                  return <button key={opt} className={cls} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
-                })}
-              </div>
-              {answerResult && (
-                <>
-                  {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
-                  <p style={s.explanation}>{answerResult.explanation}</p>
-                  <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
-                </>
-              )}
-            </>
-          )}
+          <button style={s.backButton} onClick={leaveTask}>{t.back}</button>
+          {renderReading()}
         </div>
       )}
 
       {screen === 'task' && selectedTopic !== 'differences' && selectedTopic !== 'reading' && (
         <div className="screen-anim">
-          <button style={s.backButton} onClick={() => setScreen('difficulty')}>{t.back}</button>
+          <button style={s.backButton} onClick={leaveTask}>{t.back}</button>
           {loadError ? (
             <div style={{ maxWidth: '320px', margin: '4rem auto 0' }}>
               <p style={{ color: c.textSecondary, marginBottom: '1.5rem' }}>❌ {t.loadError}</p>
@@ -1159,8 +1622,10 @@ function App() {
         <div className="screen-anim" style={s.welcomeWrap}>
           <div style={s.welcomeEmoji}>{seriesLog.filter((e) => e.ok).length === SERIES_LENGTH ? '🔥' : '💪'}</div>
           <h1 style={s.welcomeTitle}>{seriesLog.filter((e) => e.ok).length}/{SERIES_LENGTH} {t.correctOf}</h1>
-          <p style={{ ...s.welcomeSubtitle, marginBottom: selectedTopic === 'matrices' ? '1.5rem' : '3rem' }}>{t.topics[selectedTopic]} — {t.seriesDone}</p>
+          <p style={{ ...s.welcomeSubtitle, marginBottom: seriesPerfect ? '0.6rem' : (selectedTopic === 'matrices' || selectedTopic === 'reading') ? '1.5rem' : '3rem' }}>{t.topics[selectedTopic]} — {t.seriesDone}</p>
+          {seriesPerfect && <p style={{ color: GOLD, fontSize: '0.85rem', margin: `0 0 ${selectedTopic === 'matrices' || selectedTopic === 'reading' ? '1.5rem' : '3rem'}` }}>💎 {lang === 'ru' ? `Идеальная серия! Всего таких: ${meta.perfectSeries}` : `Perfect series! Total: ${meta.perfectSeries}`}</p>}
           {selectedTopic === 'matrices' && renderMatrixSummary()}
+          {selectedTopic === 'reading' && renderReadingSummary()}
           <button style={s.nextButton} onClick={continueAfterSummary}>{t.continueBtn}</button>
         </div>
       )}
@@ -1170,7 +1635,7 @@ function App() {
           <button style={s.backButton} onClick={() => setScreen(prevScreen)}>{t.back}</button>
           <h1 style={s.title}>{t.stats}</h1>
           <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center', marginBottom: '1.75rem', flexWrap: 'wrap' }}>
-            <button style={s.linkBtn} onClick={openAchievements}>🏅 {t.achievements}</button>
+            <button style={s.linkBtn} onClick={openAchievements}>🏅 {t.achievements}{achStates.length > 0 ? ` ${achStates.filter((a) => a.unlocked).length}/${achStates.length}` : ''}</button>
             <button style={s.linkBtn} onClick={openLeaderboard}>📈 {t.leaderboard}</button>
             <button style={s.linkBtn} onClick={openInvite}>🎁 {t.inviteBtn}</button>
           </div>
@@ -1201,21 +1666,8 @@ function App() {
       {screen === 'achievements' && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={() => setScreen('stats')}>{t.back}</button>
-          <h1 style={s.title}>{t.achievements}</h1>
-          {achievementsLoading ? <Skeleton height="70px" width="100%" bg={c.skeletonBg} /> : (
-            <div style={s.achievementsGrid}>
-              {ACHIEVEMENTS.map((a) => {
-                const unlocked = unlockedAchievements.includes(a.id)
-                return (
-                  <div key={a.id} style={unlocked ? s.achievementCardUnlocked : s.achievementCardLocked}>
-                    <div style={{ fontSize: '1.6rem', opacity: unlocked ? 1 : 0.3 }}>{a.emoji}</div>
-                    <div style={{ fontWeight: 500, fontSize: '0.85rem', marginTop: '0.4rem' }}>{a.title[lang]}</div>
-                    <div style={{ fontSize: '0.72rem', color: c.textSecondary, marginTop: '0.2rem' }}>{a.description[lang]}</div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
+          <h1 style={{ ...s.title, marginBottom: '1.5rem' }}>{t.achievements}</h1>
+          {renderAchievements()}
         </div>
       )}
 
@@ -1272,8 +1724,8 @@ function App() {
 
 function getStyles(c: typeof PALETTES.dark): Record<string, React.CSSProperties> {
   return {
-    page: { minHeight: '100vh', background: c.bg, color: c.text, fontFamily: '-apple-system, sans-serif', padding: '2.5rem 1.25rem', textAlign: 'center', position: 'relative', overflow: 'hidden' },
-    topControls: { position: 'absolute', top: '1.75rem', right: '1.25rem', display: 'flex', gap: '0.5rem', zIndex: 2 },
+    page: { minHeight: '100vh', background: c.bg, color: c.text, fontFamily: '-apple-system, sans-serif', padding: '2.5rem 1.25rem', textAlign: 'center', position: 'relative', overflow: 'hidden', isolation: 'isolate' },
+    topControls: { position: 'absolute', top: '1.75rem', right: '1.25rem', display: 'flex', gap: '0.5rem', zIndex: 6 },
     toggleBtn: { background: 'transparent', border: `0.5px solid ${c.cardBorder}`, borderRadius: '10px', padding: '0.35rem 0.55rem', fontSize: '0.8rem', color: c.text, cursor: 'pointer' },
     welcomeWrap: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '80vh', position: 'relative', zIndex: 1 },
     welcomeEmoji: { fontSize: '3rem', marginBottom: '1.75rem' },
@@ -1311,10 +1763,24 @@ function getStyles(c: typeof PALETTES.dark): Record<string, React.CSSProperties>
     streakLabel: { fontSize: '0.78rem', color: c.textSecondary },
     categoryList: { display: 'flex', flexDirection: 'column', gap: '0.55rem' },
     categoryRow: { display: 'flex', justifyContent: 'space-between', background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '12px', padding: '0.8rem 1rem', fontSize: '0.9rem' },
-    achievementsGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem', maxWidth: '380px', margin: '0 auto', position: 'relative', zIndex: 1 },
-    achievementCardUnlocked: { background: 'rgba(77, 77, 255, 0.1)', border: `0.5px solid ${NEON}`, borderRadius: '16px', padding: '1rem 0.75rem' },
-    achievementCardLocked: { background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '16px', padding: '1rem 0.75rem', opacity: 0.6 },
+    achievementCardUnlocked: { background: 'rgba(77, 77, 255, 0.12)', border: `0.5px solid ${NEON}`, borderRadius: '16px', padding: '1rem 0.75rem', boxShadow: '0 0 14px rgba(77, 77, 255, 0.22)' },
+    achievementCardLocked: { background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '16px', padding: '1rem 0.75rem' },
+    pill: { background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '999px', padding: '0.25rem 0.75rem', fontSize: '0.75rem', color: c.textSecondary },
+    readCard: { background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '18px', padding: '1.25rem 1.1rem', maxWidth: '380px', margin: '0 auto', position: 'relative', zIndex: 1, boxSizing: 'border-box' },
+    timerTrack: { height: '4px', borderRadius: '999px', background: c.cardBg, maxWidth: '380px', margin: '1rem auto 0', overflow: 'hidden', position: 'relative', zIndex: 1 },
+    timerFill: { height: '100%', width: '100%', background: NEON, borderRadius: '999px', transformOrigin: 'left center' },
+    toast: { position: 'fixed', top: 'calc(env(safe-area-inset-top, 0px) + 12px)', left: '50%', transform: 'translateX(-50%)', zIndex: 100, display: 'flex', alignItems: 'center', gap: '0.75rem', background: 'rgba(18, 18, 38, 0.97)', color: '#fff', border: `0.5px solid ${GOLD}`, borderRadius: '16px', padding: '0.7rem 1.1rem', boxShadow: '0 8px 30px rgba(0,0,0,0.45)', cursor: 'pointer', width: 'max-content', maxWidth: '90vw', boxSizing: 'border-box' },
+    bgMenu: { position: 'absolute', top: 'calc(100% + 8px)', right: 0, width: '215px', background: c.bg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '14px', padding: '0.4rem', boxShadow: '0 10px 30px rgba(0,0,0,0.4)', display: 'flex', flexDirection: 'column', gap: '2px' },
+    bgRow: { display: 'flex', alignItems: 'center', gap: '0.65rem', background: 'transparent', border: '1px solid transparent', borderRadius: '10px', padding: '0.5rem 0.6rem', color: c.text, fontSize: '0.88rem', cursor: 'pointer', textAlign: 'left' },
   }
+}
+
+function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
+  )
 }
 
 export default App
