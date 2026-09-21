@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Brain3D from './Brain3D'
+import { generateMatrix, loadMatrixProfile, saveMatrixProfile, recordMatrixResult, getRank, analyzeProfile, kindLabel, PERFECT_SERIES_POINTS, FAST_BONUS_XP } from './matrices'
+import type { MatrixProfile } from './matrices'
 
 declare global {
   interface Window {
@@ -23,9 +25,16 @@ type Task = {
   isColorTask?: boolean
   colorHex?: string
   passage?: string
+  cells?: string[]
+  cols?: number
+  kind?: string
+  kindLabel?: string
+  level?: Difficulty
+  xp?: number
+  fastSeconds?: number
 }
+type SeriesEntry = { ok: boolean; ms: number; kind?: string }
 type AnswerResult = { is_correct: boolean; correct_answer: string; explanation: string; xp_earned: number }
-type TopicStats = Record<Topic, { total: number; correct: number }>
 type UserStats = {
   current_streak: number
   longest_streak: number
@@ -227,16 +236,21 @@ function generateDifferencesBoard(difficulty: Difficulty): DiffBoard {
   return { size, diffCount, cells, diffPositions: positions }
 }
 
-const MATRICES_BANK: Record<Difficulty, { question: string; options: string[]; correct: string; explanation: string }[]> = {
-  1: [{ question: 'Продолжи ряд:\n🔵 🔶 🔵 🔶 🔵 ?', options: ['🔵', '🔶', '🟢', '🔺'], correct: '🔶', explanation: 'Фигуры чередуются через одну' }],
-  2: [{ question: 'Найди недостающую фигуру:\n🔺🔺 🔷🔷 🔺🔺🔺 🔷🔷🔷 ?', options: ['🔺🔺🔺🔺', '🔷🔷', '🔺', '🔷🔷🔷🔷'], correct: '🔺🔺🔺🔺', explanation: 'Каждая следующая группа того же символа на 1 больше предыдущей такой же' }],
-  3: [{ question: 'Закономерность: 🔵→🔵🔵→🔵🔵🔵🔵→🔵🔵🔵🔵🔵🔵🔵🔵\n\nСколько будет дальше?', options: ['12', '16', '10', '9'], correct: '16', explanation: 'Каждый раз количество удваивается: 1,2,4,8,16' }],
+function generateMatricesTask(difficulty: Difficulty): Task {
+  const p = generateMatrix(difficulty)
+  return {
+    task_id: 'matrix-' + Date.now(), question: p.question, options: p.options, correct: p.correct, explanation: p.explanation,
+    cells: p.cells, cols: p.cols, kind: p.kind, kindLabel: p.kindLabel, level: difficulty, xp: p.xp, fastSeconds: p.fastSeconds,
+  }
 }
 
-function generateMatricesTask(difficulty: Difficulty): Task {
-  const pool = MATRICES_BANK[difficulty]
-  const picked = pool[rand(0, pool.length - 1)]
-  return { task_id: 'matrix-' + Date.now(), ...picked }
+function cellFontSize(text: string, cols: number): string {
+  if (text === '?') return '1.4rem'
+  if (/^-?\d+$/.test(text)) return text.length > 3 ? '1rem' : '1.2rem'
+  const longest = Math.max(...text.replace(/\uFE0F/g, '').split('\n').map((l) => [...l].length))
+  let size = longest <= 2 ? 1.6 : longest === 3 ? 1.35 : longest <= 5 ? 1.05 : 0.9
+  if (cols >= 6) size = Math.min(size, 1.2)
+  return `${size}rem`
 }
 
 const READING_BANK: Record<Difficulty, { passage: string; question: string; options: string[]; correct: string; explanation: string; readSeconds: number }[]> = {
@@ -462,11 +476,10 @@ function App() {
   const [memoryHidden, setMemoryHidden] = useState(false)
   const [readingHidden, setReadingHidden] = useState(false)
   const [userId, setUserId] = useState<number | null>(null)
-  const [topicStats, setTopicStats] = useState<TopicStats>({
-    memory: { total: 0, correct: 0 }, attention: { total: 0, correct: 0 }, logic: { total: 0, correct: 0 }, math: { total: 0, correct: 0 },
-    differences: { total: 0, correct: 0 }, speed: { total: 0, correct: 0 }, colors: { total: 0, correct: 0 }, words: { total: 0, correct: 0 },
-    matrices: { total: 0, correct: 0 }, reading: { total: 0, correct: 0 },
-  })
+  const [seriesLog, setSeriesLog] = useState<SeriesEntry[]>([])
+  const [matrixProfile, setMatrixProfile] = useState<MatrixProfile>(loadMatrixProfile)
+  const taskStartRef = useRef<number>(Date.now())
+  const seriesStartPointsRef = useRef<number>(0)
   const [userStats, setUserStats] = useState<UserStats | null>(null)
   const [statsLoading, setStatsLoading] = useState(false)
   const [unlockedAchievements, setUnlockedAchievements] = useState<string[]>([])
@@ -627,7 +640,13 @@ function App() {
       .catch(() => { setPayLoading(false); openPayLink(undefined) })
   }
 
+  const resetSeries = () => {
+    setSeriesLog([])
+    seriesStartPointsRef.current = matrixProfile.points
+  }
+
   const loadTask = (topic: Topic, difficulty: Difficulty) => {
+    taskStartRef.current = Date.now()
     setSelectedAnswer(null)
     setAnswerResult(null)
     setDiffFound([])
@@ -688,18 +707,26 @@ function App() {
 
     if (CLIENT_TOPICS.includes(selectedTopic)) {
       const isCorrect = opt === task.correct
-      const result: AnswerResult = { is_correct: isCorrect, correct_answer: task.correct || '', explanation: task.explanation || '', xp_earned: isCorrect ? 10 : 0 }
+      const elapsedMs = Date.now() - taskStartRef.current
+      const isMatrix = selectedTopic === 'matrices' && !!task.kind && !!task.level
+      const fast = isMatrix && isCorrect && elapsedMs <= (task.fastSeconds ?? 0) * 1000
+      const xp = isCorrect ? (task.xp ?? 10) + (fast ? FAST_BONUS_XP : 0) : 0
+      const explanation = (task.explanation || '') + (fast ? `\n⚡ Быстрый ответ: +${FAST_BONUS_XP} XP` : '')
+      const result: AnswerResult = { is_correct: isCorrect, correct_answer: task.correct || '', explanation, xp_earned: xp }
       setAnswerResult(result)
       haptic(isCorrect ? 'success' : 'error')
-      setTopicStats((prev) => {
-        const topic = selectedTopic
-        const p = prev[topic]
-        return { ...prev, [topic]: { total: p.total + 1, correct: p.correct + (isCorrect ? 1 : 0) } }
-      })
+      setSeriesLog((prev) => [...prev, { ok: isCorrect, ms: elapsedMs, kind: task.kind }])
+      if (isMatrix) {
+        setMatrixProfile((prev) => {
+          const next = recordMatrixResult(prev, task.kind as string, task.level as Difficulty, isCorrect, fast)
+          saveMatrixProfile(next)
+          return next
+        })
+      }
       if (userId !== null) {
         fetch(`${API_URL}/api/answer/client`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_id: userId, category: selectedTopic, is_correct: isCorrect, xp_value: 10 }),
+          body: JSON.stringify({ user_id: userId, category: selectedTopic, is_correct: isCorrect, xp_value: isCorrect ? xp : (task.xp ?? 10) }),
         }).then(() => { if (isCorrect) fetchTopBarStats(userId) }).catch(() => {})
       }
       return
@@ -714,11 +741,7 @@ function App() {
       .then((data: AnswerResult) => {
         setAnswerResult(data)
         haptic(data.is_correct ? 'success' : 'error')
-        setTopicStats((prev) => {
-          const topic = selectedTopic
-          const p = prev[topic]
-          return { ...prev, [topic]: { total: p.total + 1, correct: p.correct + (data.is_correct ? 1 : 0) } }
-        })
+        setSeriesLog((prev) => [...prev, { ok: data.is_correct, ms: Date.now() - taskStartRef.current }])
         if (data.is_correct) fetchTopBarStats(uid)
       })
       .catch(() => setAnswerResult({ is_correct: false, correct_answer: '', explanation: t.loadError, xp_earned: 0 }))
@@ -734,7 +757,7 @@ function App() {
       const xpValue = diffBoard.diffCount
       setAnswerResult({ is_correct: true, correct_answer: '', explanation: t.allFound, xp_earned: xpValue })
       haptic('success')
-      setTopicStats((prev) => ({ ...prev, differences: { total: prev.differences.total + 1, correct: prev.differences.correct + 1 } }))
+      setSeriesLog((prev) => [...prev, { ok: true, ms: Date.now() - taskStartRef.current }])
       if (userId !== null) {
         fetch(`${API_URL}/api/answer/client`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -746,13 +769,19 @@ function App() {
 
   const handleNext = () => {
     if (!selectedTopic || !selectedDifficulty) return
-    const stats = topicStats[selectedTopic]
-    if (stats.total > 0 && stats.total % SERIES_LENGTH === 0) setScreen('summary')
-    else loadTask(selectedTopic, selectedDifficulty)
+    if (seriesLog.length >= SERIES_LENGTH) {
+      if (selectedTopic === 'matrices' && seriesLog.every((e) => e.ok)) {
+        const next = { ...matrixProfile, points: matrixProfile.points + PERFECT_SERIES_POINTS }
+        setMatrixProfile(next)
+        saveMatrixProfile(next)
+      }
+      setScreen('summary')
+    } else loadTask(selectedTopic, selectedDifficulty)
   }
 
   const continueAfterSummary = () => {
     if (!selectedTopic || !selectedDifficulty) return
+    resetSeries()
     loadTask(selectedTopic, selectedDifficulty)
   }
 
@@ -804,6 +833,37 @@ function App() {
   }
 
   const s = getStyles(c)
+
+  const renderMatrixSummary = () => {
+    const info = getRank(matrixProfile.points)
+    const before = getRank(seriesStartPointsRef.current)
+    const gained = matrixProfile.points - seriesStartPointsRef.current
+    const rankedUp = info.rank.name !== before.rank.name
+    const analysis = analyzeProfile(matrixProfile)
+    return (
+      <div style={s.statsWrap}>
+        <div style={{ ...s.streakCard, marginBottom: '1rem' }}>
+          <div style={{ fontSize: '2rem', marginBottom: '0.25rem' }}>{info.rank.emoji}</div>
+          <div style={{ fontSize: '1.15rem', fontWeight: 500 }}>Ранг: {info.rank.name}</div>
+          {rankedUp && <div style={{ color: GREEN, fontSize: '0.85rem', marginTop: '0.25rem' }}>🎉 Новый ранг!</div>}
+          <div style={{ ...s.levelBarTrack, margin: '0.75rem 0 0.4rem' }}><div style={{ ...s.levelBarFill, width: `${info.progressPct}%` }} /></div>
+          <div style={{ fontSize: '0.78rem', color: c.textSecondary }}>
+            {matrixProfile.points} очков{gained > 0 ? ` (+${gained} за серию)` : ''} · {info.next ? `до «${info.next.name}»: ${info.toNext}` : 'максимальный ранг'}
+          </div>
+        </div>
+        <div style={{ ...s.categoryList, marginBottom: '1rem' }}>
+          {seriesLog.map((e, i) => (
+            <div key={i} style={s.categoryRow}>
+              <span>{e.ok ? '✅' : '❌'} {e.kind ? kindLabel(e.kind) : ''}</span>
+              <span style={{ color: c.textSecondary }}>{Math.max(1, Math.round(e.ms / 1000))} с</span>
+            </div>
+          ))}
+        </div>
+        {analysis.best && <p style={{ fontSize: '0.85rem', color: c.textSecondary, marginBottom: '0.4rem' }}>💪 Сильная сторона: {analysis.best.label} — {analysis.best.pct}%</p>}
+        {analysis.worst && <p style={{ fontSize: '0.85rem', color: c.textSecondary, marginBottom: '0.4rem' }}>🎯 Стоит подтянуть: {analysis.worst.label} — {analysis.worst.pct}%</p>}
+      </div>
+    )
+  }
 
   const getMemoryQuestionText = (): string => {
     if (!task) return ''
@@ -959,7 +1019,7 @@ function App() {
           <p style={s.subtitle}>{t.chooseDifficulty}</p>
           <div style={s.gridDifficulty}>
             {DIFFICULTY_KEYS.map((key) => (
-              <button key={key} style={s.cardSmall} onClick={() => { setSelectedDifficulty(key); if (selectedTopic) loadTask(selectedTopic, key) }}>
+              <button key={key} style={s.cardSmall} onClick={() => { setSelectedDifficulty(key); resetSeries(); if (selectedTopic) loadTask(selectedTopic, key) }}>
                 <div style={s.cardEmoji}>{DIFFICULTY_EMOJI[key]}</div>
                 <div style={s.cardLabel}>{t.difficulties[key]}</div>
               </button>
@@ -1048,9 +1108,22 @@ function App() {
                 </p>
               )}
               {task.isColorTask && <p style={{ fontSize: '0.78rem', color: c.textSecondary, marginBottom: '0.5rem' }}>{t.colorInstruction}</p>}
-              <p style={{ ...s.question, color: task.isColorTask && !answerResult ? task.colorHex : c.text }}>
+              <p style={{ ...s.question, marginBottom: task.cells ? '1rem' : s.question.marginBottom, color: task.isColorTask && !answerResult ? task.colorHex : c.text }}>
                 {selectedTopic === 'memory' ? getMemoryQuestionText() : task.question}
               </p>
+              {task.cells && task.cols && (
+                <div style={s.matrixGrid}>
+                  {task.cells.map((cell, i) => {
+                    const isHole = cell === '?'
+                    const solved = isHole && answerResult !== null
+                    const shown = solved ? (task.correct || '') : cell
+                    let extra: React.CSSProperties = {}
+                    if (isHole && !solved) extra = { border: `1.5px dashed ${NEON}`, color: NEON, fontWeight: 600 }
+                    else if (solved) extra = answerResult?.is_correct ? { background: 'rgba(34, 197, 94, 0.12)', border: `0.5px solid ${GREEN}` } : { background: 'rgba(239, 68, 68, 0.12)', border: `0.5px solid ${RED}` }
+                    return <div key={i} style={{ ...s.matrixCell, width: `calc(${100 / (task.cols as number)}% - 6px)`, fontSize: cellFontSize(shown, task.cols as number), ...extra }}>{shown}</div>
+                  })}
+                </div>
+              )}
               {selectedTopic === 'memory' && !memoryHidden && !answerResult && (
                 <p style={{ fontSize: '0.78rem', color: c.textSecondary, marginTop: '-1.5rem', marginBottom: '1.5rem' }}>{t.memorizeHint}</p>
               )}
@@ -1064,7 +1137,8 @@ function App() {
                     let cls = ''
                     if (showResult && isSelected && !isCorrectOption) { style = s.cardWrong; cls = 'wrong-shake' }
                     else if (isCorrectOption) { style = s.cardCorrect; cls = 'correct-pop' }
-                    return <button key={opt} className={cls} style={style} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
+                    const optStyle: React.CSSProperties = task.cells ? { ...style, fontSize: cellFontSize(opt, 3), whiteSpace: 'pre-wrap', lineHeight: 1.15 } : style
+                    return <button key={opt} className={cls} style={optStyle} disabled={selectedAnswer !== null} onClick={() => submitAnswer(opt)}>{opt}</button>
                   })}
                 </div>
               )}
@@ -1072,6 +1146,7 @@ function App() {
                 <>
                   {answerResult.is_correct && <CelebrateFX xp={answerResult.xp_earned} />}
                   <p style={s.explanation}>{answerResult.explanation}</p>
+                  {task.kindLabel && <p style={{ ...s.explanation, marginTop: '0.5rem', fontSize: '0.78rem' }}>🏷 Тип закономерности: {task.kindLabel}</p>}
                   <button style={s.nextButton} onClick={handleNext}>{t.nextTask}</button>
                 </>
               )}
@@ -1082,9 +1157,10 @@ function App() {
 
       {screen === 'summary' && selectedTopic && (
         <div className="screen-anim" style={s.welcomeWrap}>
-          <div style={s.welcomeEmoji}>{topicStats[selectedTopic].correct === SERIES_LENGTH ? '🔥' : '💪'}</div>
-          <h1 style={s.welcomeTitle}>{topicStats[selectedTopic].correct}/{SERIES_LENGTH} {t.correctOf}</h1>
-          <p style={s.welcomeSubtitle}>{t.topics[selectedTopic]} — {t.seriesDone}</p>
+          <div style={s.welcomeEmoji}>{seriesLog.filter((e) => e.ok).length === SERIES_LENGTH ? '🔥' : '💪'}</div>
+          <h1 style={s.welcomeTitle}>{seriesLog.filter((e) => e.ok).length}/{SERIES_LENGTH} {t.correctOf}</h1>
+          <p style={{ ...s.welcomeSubtitle, marginBottom: selectedTopic === 'matrices' ? '1.5rem' : '3rem' }}>{t.topics[selectedTopic]} — {t.seriesDone}</p>
+          {selectedTopic === 'matrices' && renderMatrixSummary()}
           <button style={s.nextButton} onClick={continueAfterSummary}>{t.continueBtn}</button>
         </div>
       )}
@@ -1221,9 +1297,11 @@ function getStyles(c: typeof PALETTES.dark): Record<string, React.CSSProperties>
     cardAnswer: { background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '16px', padding: '1rem 0.5rem', color: c.text, fontSize: '0.95rem', cursor: 'pointer' },
     cardCorrect: { background: 'rgba(34, 197, 94, 0.12)', border: `0.5px solid ${GREEN}`, borderRadius: '16px', padding: '1rem 0.5rem', color: c.text, fontSize: '0.95rem' },
     cardWrong: { background: 'rgba(239, 68, 68, 0.12)', border: `0.5px solid ${RED}`, borderRadius: '16px', padding: '1rem 0.5rem', color: c.text, fontSize: '0.95rem' },
+    matrixGrid: { display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', maxWidth: '380px', margin: '0 auto 1.6rem', position: 'relative', zIndex: 1 },
+    matrixCell: { background: c.cardBg, border: `0.5px solid ${c.cardBorder}`, borderRadius: '12px', minHeight: '58px', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.15, boxSizing: 'border-box', padding: '4px', textAlign: 'center', color: c.text },
     cardEmoji: { fontSize: '1.8rem' },
     cardLabel: { fontSize: '0.95rem', fontWeight: 500 },
-    explanation: { marginTop: '1.75rem', color: c.textSecondary, fontSize: '0.88rem', maxWidth: '380px', marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.5, position: 'relative', zIndex: 1 },
+    explanation: { whiteSpace: 'pre-line', marginTop: '1.75rem', color: c.textSecondary, fontSize: '0.88rem', maxWidth: '380px', marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.5, position: 'relative', zIndex: 1 },
     nextButton: { marginTop: '1.75rem', background: NEON, border: 'none', borderRadius: '14px', padding: '0.85rem 1.5rem', color: '#fff', fontSize: '0.95rem', fontWeight: 500, cursor: 'pointer', position: 'relative', zIndex: 1 },
     linkBtn: { background: 'transparent', border: `0.5px solid ${c.cardBorder}`, borderRadius: '12px', padding: '0.6rem 1rem', color: c.text, fontSize: '0.85rem', cursor: 'pointer' },
     statsWrap: { maxWidth: '380px', margin: '0 auto', position: 'relative', zIndex: 1 },
