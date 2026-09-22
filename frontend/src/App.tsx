@@ -11,6 +11,7 @@ import type { GameTask, GameTopic, Stimulus } from './gametypes'
 import { loadGameProfiles, saveGameProfiles, recordGameResult, getGameRank, analyzeGame, kindTitle, comboBonusXp, POINTS_PER_LEVEL, FAST_BONUS_POINTS, FAST_BONUS_XP as GAME_FAST_XP, PERFECT_SERIES_POINTS as GAME_PERFECT_POINTS } from './gamestats'
 import type { GameProfiles, ProfileTopic } from './gamestats'
 import { sfx, isSoundOn, setSoundOn } from './sfx'
+import brainBanner from './brain-banner.webp'
 
 // 3D-мозг тяжёлый (three.js) — грузим отдельно, чтобы приложение открывалось быстрее
 const Brain3D = lazy(() => import('./Brain3D'))
@@ -24,7 +25,7 @@ declare global {
 type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard' | 'paywall' | 'premiumPurchase' | 'invite'
 type Topic = 'memory' | 'attention' | 'logic' | 'math' | 'differences' | 'speed' | 'colors' | 'words' | 'matrices' | 'reading'
 type Difficulty = 1 | 2 | 3
-type Background = 'space' | 'black' | 'white' | 'aurora' | 'neural' | 'ocean' | 'sunset'
+type Background = 'space' | 'black' | 'white' | 'aurora' | 'neural' | 'ocean' | 'sunset' | 'brain'
 type Lang = 'ru' | 'en'
 
 type Task = {
@@ -88,6 +89,7 @@ const BACKGROUNDS: { id: Background; icon: string; name: { ru: string; en: strin
   { id: 'neural', icon: '🕸️', name: { ru: 'Нейросеть', en: 'Neural net' }, swatch: 'radial-gradient(circle at 50% 40%, #4d4dff, #070718 75%)' },
   { id: 'ocean', icon: '🌊', name: { ru: 'Океан', en: 'Ocean' }, swatch: 'linear-gradient(180deg, #2a9fd6, #04304f 55%, #010b1c)' },
   { id: 'sunset', icon: '🌆', name: { ru: 'Закат', en: 'Synthwave' }, swatch: 'linear-gradient(180deg, #2a0a4d, #c2307a 55%, #ffb36b)' },
+  { id: 'brain', icon: '🧠', name: { ru: 'Нейроныч', en: 'Neuronych' }, swatch: 'radial-gradient(circle at 50% 45%, #35d9ff 0%, #7a3cff 48%, #05030f 80%)' },
 ]
 const SERIES_LENGTH = 5
 const DIFF_TIME: Record<Difficulty, number> = { 1: 60, 2: 75, 3: 90 }
@@ -633,11 +635,34 @@ function NeuralBg() {
   return <canvas ref={ref} style={{ ...BG_BASE, width: '100%', height: '100%', background: 'radial-gradient(circle at 50% 30%, #12124a 0%, #070718 60%, #03030a 100%)' }} />
 }
 
+const BrainBg = memo(function BrainBg() {
+  const [sparks] = useState(() => Array.from({ length: 22 }, (_, i) => ({
+    id: i,
+    top: Math.random() * 100,
+    left: Math.random() * 100,
+    size: 1.5 + Math.random() * 2.5,
+    dur: 3 + Math.random() * 4,
+    delay: Math.random() * 4,
+    color: Math.random() < 0.5 ? '#6fd8ff' : '#c86bff',
+  })))
+  return (
+    <div style={{ ...BG_BASE, background: 'radial-gradient(circle at 50% 42%, #0d1230 0%, #050510 55%, #030308 100%)' }}>
+      <div className="bg-brain-halo" />
+      {sparks.map((p) => (
+        <span key={p.id} className="bg-brain-spark" style={{ top: `${p.top}%`, left: `${p.left}%`, width: p.size, height: p.size, color: p.color, background: p.color, animationDuration: `${p.dur}s`, animationDelay: `${p.delay}s` }} />
+      ))}
+      <img src={brainBanner} alt="" className="bg-brain-img" />
+      <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 50% 46%, rgba(3,3,10,0.18) 0%, rgba(3,3,10,0.4) 55%, rgba(3,3,10,0.72) 100%)' }} />
+    </div>
+  )
+})
+
 function BackgroundLayer({ kind }: { kind: Background }) {
   if (kind === 'aurora') return <AuroraBg />
   if (kind === 'ocean') return <OceanBg />
   if (kind === 'sunset') return <SunsetBg />
   if (kind === 'neural') return <NeuralBg />
+  if (kind === 'brain') return <BrainBg />
   return null
 }
 
@@ -1760,7 +1785,13 @@ function AppInner() {
         .bg-sun { position: absolute; left: 50%; bottom: 15%; width: min(58vw, 230px); aspect-ratio: 1; transform: translateX(-50%); border-radius: 50%; background: linear-gradient(180deg, #fff08a 0%, #ff9b5e 45%, #ff2e88 100%); opacity: 0.7; -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 50%, transparent 50%, transparent 55%, #000 55%, #000 64%, transparent 64%, transparent 71%, #000 71%, #000 79%, transparent 79%, transparent 87%, #000 87%); mask-image: linear-gradient(180deg, #000 0%, #000 50%, transparent 50%, transparent 55%, #000 55%, #000 64%, transparent 64%, transparent 71%, #000 71%, #000 79%, transparent 79%, transparent 87%, #000 87%); }
         .bg-floor { position: absolute; left: -40%; right: -40%; bottom: 0; height: 46%; background: linear-gradient(rgba(255,110,220,0.6) 2px, transparent 2px) 0 0 / 100% 46px, linear-gradient(90deg, rgba(255,110,220,0.6) 2px, transparent 2px) 0 0 / 70px 100%, linear-gradient(180deg, #24004a, #12002b); transform: perspective(300px) rotateX(62deg); transform-origin: 50% 100%; animation: gridMove 1.8s linear infinite; }
         @keyframes gridMove { from { background-position: 0 0, 0 0, 0 0; } to { background-position: 0 46px, 0 0, 0 0; } }
-        @media (prefers-reduced-motion: reduce) { .bg-blob, .bg-ray, .bg-bubble, .bg-floor { animation: none; } }
+        .bg-brain-img { position: absolute; left: 50%; top: 46%; width: min(82vw, 420px); max-width: 92vw; aspect-ratio: 1; object-fit: contain; transform: translate(-50%, -50%); animation: brainFloat 6s ease-in-out infinite; filter: drop-shadow(0 0 40px rgba(90,120,255,0.35)); }
+        @keyframes brainFloat { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.035); } }
+        .bg-brain-halo { position: absolute; left: 50%; top: 46%; width: min(95vw, 480px); aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; background: radial-gradient(circle, rgba(110,140,255,0.35), rgba(190,90,255,0.18) 45%, rgba(0,0,0,0) 72%); animation: brainPulse 5s ease-in-out infinite; }
+        @keyframes brainPulse { 0%, 100% { opacity: 0.55; transform: translate(-50%, -50%) scale(0.94); } 50% { opacity: 0.95; transform: translate(-50%, -50%) scale(1.06); } }
+        .bg-brain-spark { position: absolute; border-radius: 50%; opacity: 0; animation: brainSpark ease-in-out infinite; box-shadow: 0 0 6px currentColor; }
+        @keyframes brainSpark { 0%, 100% { opacity: 0; transform: scale(0.6); } 50% { opacity: 0.9; transform: scale(1); } }
+        @media (prefers-reduced-motion: reduce) { .bg-blob, .bg-ray, .bg-bubble, .bg-floor, .bg-brain-img, .bg-brain-halo, .bg-brain-spark { animation: none; } }
       `}</style>
 
       <BackgroundLayer kind={background} />
