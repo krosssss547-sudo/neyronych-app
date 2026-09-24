@@ -3,6 +3,7 @@ import re
 import hashlib
 import hmac
 import logging
+from datetime import datetime, timedelta
 from urllib.parse import quote
 import httpx
 
@@ -17,7 +18,8 @@ from database import (
     update_streak, get_user_stats, add_xp, get_leaderboard, get_user_rank,
     get_admin_overview, start_trial_if_needed, get_access_status,
     activate_subscription, grant_premium_topics, get_referral_stats,
-    create_payment_invoice, get_invoice, mark_invoice_credited
+    create_payment_invoice, get_invoice, mark_invoice_credited,
+    find_user, refresh_username, get_subscription_expiry
 )
 from tasks_data import TASKS
 
@@ -45,6 +47,8 @@ TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 ROBOKASSA_TEST = os.environ.get("ROBOKASSA_TEST", "") == "1"
 # Адрес страницы с офертой (например https://<сайт>.vercel.app/oferta.html) — кнопка в ответе на /start
 OFFER_URL = os.environ.get("OFFER_URL", "")
+# Telegram ID админов через запятую — только им доступны /grant и другие админ-команды (свой ID покажет /myid)
+ADMIN_IDS = {int(x) for x in re.findall(r"\d+", os.environ.get("ADMIN_IDS", ""))}
 
 SUBSCRIPTION_STARS = 100
 PREMIUM_STARS = 70
@@ -301,12 +305,24 @@ async def telegram_webhook(request: Request):
             grant_premium_topics(user_id)
         return {"ok": True}
 
-    # Любое текстовое сообщение в личке (/start или просто "привет") —
-    # отвечаем приветствием и кнопкой, которая открывает Mini App.
+    # Текстовые сообщения в личке: админ-команды, /myid, а на всё остальное (/start, "привет") —
+    # приветствие и кнопка, которая открывает Mini App.
     chat = message.get("chat", {})
     text = (message.get("text") or "").strip()
+    sender = message.get("from") or {}
     if chat.get("type") == "private" and chat.get("id") and text:
-        await _reply_with_app_button(chat["id"], text)
+        command = text.split()[0].split("@")[0].lower()
+        if sender.get("id") and sender.get("username"):
+            try:
+                refresh_username(sender["id"], sender["username"])
+            except Exception:
+                logger.exception("refresh_username error")
+        if command == "/myid":
+            await _send_message(chat["id"], f"Твой Telegram ID: {sender.get('id')}")
+        elif command in ADMIN_COMMANDS and sender.get("id") in ADMIN_IDS:
+            await _handle_admin_command(chat["id"], command, text)
+        else:
+            await _reply_with_app_button(chat["id"], text)
 
     return {"ok": True}
 
@@ -337,21 +353,109 @@ async def _reply_with_app_button(chat_id: int, text: str):
         start_arg = ""
         reply = OTHER_TEXT
 
+    await _send_message(chat_id, reply, _keyboard(start_arg))
+
+
+async def _send_message(chat_id: int, text: str, keyboard: list | None = None) -> bool:
+    body: dict = {"chat_id": chat_id, "text": text}
+    if keyboard:
+        body["reply_markup"] = {"inline_keyboard": keyboard}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": reply,
-                    "reply_markup": {"inline_keyboard": _keyboard(start_arg)},
-                },
-            )
-        if not resp.json().get("ok"):
-            logger.warning("sendMessage failed: %s", resp.text)
+            resp = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=body)
+        if resp.json().get("ok"):
+            return True
+        logger.warning("sendMessage failed: %s", resp.text)
     except Exception:
         # Telegram-у всё равно отвечаем 200, иначе он будет присылать это сообщение повторно.
         logger.exception("sendMessage error")
+    return False
+
+
+# ===== Админ-команды: бесплатная выдача подписки и премиум-тем =====
+
+ADMIN_COMMANDS = {"/admin", "/grant", "/grant_premium", "/user"}
+
+ADMIN_HELP = (
+    "Админ-команды:\n\n"
+    "/grant @username 30 — выдать подписку на 30 дней (дни прибавляются к остатку)\n"
+    "/grant_premium @username — выдать премиум-темы\n"
+    "/user @username — посмотреть подписку пользователя\n\n"
+    "Вместо @username можно указать Telegram ID. Человек должен хотя бы раз открыть Нейроныч."
+)
+
+
+def _days_word(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return "день"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return "дня"
+    return "дней"
+
+
+def _fmt_date(dt) -> str:
+    # В базе время в UTC — показываем дату по Москве
+    return (dt + timedelta(hours=3)).strftime("%d.%m.%Y") if dt else "—"
+
+
+async def _handle_admin_command(chat_id: int, command: str, text: str):
+    args = text.split()[1:]
+    if command == "/admin" or not args:
+        await _send_message(chat_id, ADMIN_HELP)
+        return
+
+    try:
+        user = find_user(args[0])
+    except Exception:
+        logger.exception("find_user error")
+        await _send_message(chat_id, "⚠️ Ошибка базы данных, попробуй ещё раз.")
+        return
+    if not user:
+        await _send_message(
+            chat_id,
+            f"Не нашёл пользователя {args[0]}. Он должен хотя бы раз открыть Нейроныч. "
+            "Если он менял username, попроси его написать боту /myid и укажи ID.",
+        )
+        return
+
+    uid = user["user_id"]
+    who = f"@{user['username']}" if user.get("username") else f"ID {uid}"
+    app_kb = [[_app_button("")]]
+
+    try:
+        if command == "/grant":
+            if len(args) < 2 or not args[1].isdigit() or not 1 <= int(args[1]) <= 3650:
+                await _send_message(chat_id, "Укажи число дней от 1 до 3650, например: /grant @username 30")
+                return
+            days = int(args[1])
+            activate_subscription(uid, days=days)
+            until = _fmt_date(get_subscription_expiry(uid))
+            await _send_message(chat_id, f"✅ {who}: подписка +{days} {_days_word(days)}, действует до {until}.")
+            gift = f"🎁 Тебе подарили подписку на {days} {_days_word(days)}! Она действует до {until}. Приятных тренировок 🧠"
+            if not await _send_message(uid, gift, app_kb):
+                await _send_message(chat_id, "ℹ️ Подписка выдана, но уведомить человека не получилось: скорее всего, он ни разу не писал боту.")
+
+        elif command == "/grant_premium":
+            if user.get("owns_premium_topics"):
+                await _send_message(chat_id, f"У {who} премиум-темы уже есть.")
+                return
+            grant_premium_topics(uid)
+            expiry = get_subscription_expiry(uid)
+            note = "" if expiry and expiry > datetime.utcnow() else "\n⚠️ Подписки у него сейчас нет, а премиум-темы работают только при активной подписке."
+            await _send_message(chat_id, f"✅ {who}: премиум-темы выданы.{note}")
+            gift = "🎁 Тебе подарили премиум-темы «Матрицы» и «Скорочтение»! Они открыты навсегда при активной подписке."
+            if not await _send_message(uid, gift, app_kb):
+                await _send_message(chat_id, "ℹ️ Премиум выдан, но уведомить человека не получилось: скорее всего, он ни разу не писал боту.")
+
+        elif command == "/user":
+            expiry = user.get("subscription_expires_at")
+            sub = f"до {_fmt_date(expiry)}" if expiry and expiry > datetime.utcnow() else "нет"
+            premium = "есть" if user.get("owns_premium_topics") else "нет"
+            await _send_message(chat_id, f"{who} (ID {uid})\nПодписка: {sub}\nПремиум-темы: {premium}")
+    except Exception:
+        logger.exception("admin command error")
+        await _send_message(chat_id, "⚠️ Ошибка базы данных, попробуй ещё раз.")
+
 
 
 # ===== Робокасса =====

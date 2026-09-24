@@ -504,3 +504,48 @@ def mark_invoice_credited(inv_id: int):
     conn.commit()
     cursor.close()
     conn.close()
+
+# ===== Админ-команды бота (/grant и т.п.) =====
+
+def find_user(ref: str):
+    """Ищет пользователя по @username (без учёта регистра) или по числовому Telegram ID."""
+    ref = ref.strip()
+    conn = get_conn()
+    cursor = conn.cursor()
+    fields = "user_id, username, subscription_expires_at, owns_premium_topics"
+    if ref.isdigit():
+        cursor.execute(f"SELECT {fields} FROM users WHERE user_id = %s", (int(ref),))
+    else:
+        cursor.execute(
+            f"SELECT {fields} FROM users WHERE LOWER(username) = LOWER(%s) ORDER BY created_at DESC LIMIT 1",
+            (ref.lstrip("@"),)
+        )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return dict(row) if row else None
+
+
+def refresh_username(user_id: int, username: str | None):
+    """Обновляет username, если человек его сменил (чтобы /grant @username находил его по новому)."""
+    if not username:
+        return
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET username = %s WHERE user_id = %s AND username IS DISTINCT FROM %s",
+        (username, user_id, username)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_subscription_expiry(user_id: int):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT subscription_expires_at FROM users WHERE user_id = %s", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row["subscription_expires_at"] if row else None
