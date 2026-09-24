@@ -2,6 +2,8 @@
 // Пять типов упражнений: чтение с вопросом, чтение-детали (числа и факты), вспышка слов,
 // вспышка числа и поиск повтора среди слов. Всё, кроме готовых текстов, создаётся на лету.
 
+import { cloudSave } from './cloudsync'
+
 export type Level = 1 | 2 | 3
 export type ReadMode = 'read' | 'flash' | 'scan'
 export type ReadKindId = 'read' | 'detail' | 'flash' | 'digits' | 'scan'
@@ -604,7 +606,9 @@ export function loadReadingProfile(): ReadingProfile {
 }
 
 export function saveReadingProfile(p: ReadingProfile): void {
-  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(p)) } catch { /* ignore */ }
+  const json = JSON.stringify(p)
+  try { localStorage.setItem(PROFILE_KEY, json) } catch { /* ignore */ }
+  cloudSave(PROFILE_KEY, json)
 }
 
 export function averageWpm(p: ReadingProfile): number {

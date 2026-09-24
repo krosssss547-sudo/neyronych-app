@@ -8,6 +8,7 @@ import { ACHIEVEMENTS, ACHIEVEMENT_GROUPS, evaluateAchievements, loadMeta, saveM
 import type { AchievementState, Meta } from './achievements'
 import { generateGame, isGameTopic } from './games'
 import type { GameTask, GameTopic, Stimulus } from './gametypes'
+import { syncFromCloud } from './cloudsync'
 import { loadGameProfiles, saveGameProfiles, recordGameResult, getGameRank, analyzeGame, kindTitle, comboBonusXp, POINTS_PER_LEVEL, FAST_BONUS_POINTS, FAST_BONUS_XP as GAME_FAST_XP, PERFECT_SERIES_POINTS as GAME_PERFECT_POINTS } from './gamestats'
 import type { GameProfiles, ProfileTopic } from './gamestats'
 import { sfx, isSoundOn, setSoundOn } from './sfx'
@@ -748,6 +749,21 @@ function AppInner() {
   useEffect(() => { localStorage.setItem('neyronych_background', background) }, [background])
   useEffect(() => { localStorage.setItem('neyronych_lang', lang) }, [lang])
   useEffect(() => { window.scrollTo(0, 0) }, [screen])
+
+  // Прогресс мини-игр, матриц, скорочтения и достижений синхронизируется через облако Telegram,
+  // чтобы на телефоне и ПК было одно и то же
+  useEffect(() => {
+    let alive = true
+    void syncFromCloud().then((changed) => {
+      if (!alive || !changed) return
+      seenRef.current = loadSeenAchievements()
+      setGameProfiles(loadGameProfiles())
+      setMatrixProfile(loadMatrixProfile())
+      setReadingProfile(loadReadingProfile())
+      setMeta(loadMeta())
+    })
+    return () => { alive = false }
+  }, [])
 
   useEffect(() => {
     const tg = window.Telegram?.WebApp

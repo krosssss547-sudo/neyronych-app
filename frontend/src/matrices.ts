@@ -1,6 +1,8 @@
 // Генератор задач для темы «Матрицы» + профиль игрока (ранг и разбор по типам закономерностей).
 // Все задачи создаются на лету, поэтому они не повторяются.
 
+import { cloudSave } from './cloudsync'
+
 export type Level = 1 | 2 | 3
 
 export type MatrixPuzzle = {
@@ -346,7 +348,9 @@ export function loadMatrixProfile(): MatrixProfile {
 }
 
 export function saveMatrixProfile(p: MatrixProfile): void {
-  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(p)) } catch { /* ignore */ }
+  const json = JSON.stringify(p)
+  try { localStorage.setItem(PROFILE_KEY, json) } catch { /* ignore */ }
+  cloudSave(PROFILE_KEY, json)
 }
 
 export function recordMatrixResult(p: MatrixProfile, kind: string, level: Level, ok: boolean, fast: boolean): MatrixProfile {

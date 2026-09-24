@@ -5,6 +5,7 @@ import type { ReadingProfile } from './reading'
 import type { GameProfiles } from './gamestats'
 import { PROFILE_TOPICS, TOPIC_RANKS } from './gamestats'
 import type { ProfileTopic } from './gamestats'
+import { cloudSave } from './cloudsync'
 
 export type StatsLite = {
   current_streak: number
@@ -148,7 +149,9 @@ export function loadMeta(): Meta {
 }
 
 export function saveMeta(m: Meta): void {
-  try { localStorage.setItem(META_KEY, JSON.stringify(m)) } catch { /* ignore */ }
+  const json = JSON.stringify(m)
+  try { localStorage.setItem(META_KEY, json) } catch { /* ignore */ }
+  cloudSave(META_KEY, json)
 }
 
 // null — ещё ни разу не сохраняли (первый запуск): тогда уже полученные достижения не показываем как «новые»
@@ -164,5 +167,7 @@ export function loadSeenAchievements(): string[] | null {
 }
 
 export function saveSeenAchievements(ids: string[]): void {
-  try { localStorage.setItem(SEEN_KEY, JSON.stringify(ids)) } catch { /* ignore */ }
+  const json = JSON.stringify(ids)
+  try { localStorage.setItem(SEEN_KEY, json) } catch { /* ignore */ }
+  cloudSave(SEEN_KEY, json)
 }

@@ -3,6 +3,7 @@
 
 import type { GameTopic, Level } from './gametypes'
 import { gameKindLabel } from './games'
+import { cloudSave } from './cloudsync'
 
 export type ProfileTopic = GameTopic | 'differences'
 
@@ -54,7 +55,9 @@ export function loadGameProfiles(): GameProfiles {
 }
 
 export function saveGameProfiles(p: GameProfiles): void {
-  try { localStorage.setItem(KEY, JSON.stringify(p)) } catch { /* ignore */ }
+  const json = JSON.stringify(p)
+  try { localStorage.setItem(KEY, json) } catch { /* ignore */ }
+  cloudSave(KEY, json)
 }
 
 export function recordGameResult(p: GameProfile, kind: string, ok: boolean, fast: boolean, points: number, combo: number): GameProfile {
