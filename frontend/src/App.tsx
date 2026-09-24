@@ -97,6 +97,13 @@ const DIFF_TIME: Record<Difficulty, number> = { 1: 60, 2: 75, 3: 90 }
 
 const API_URL = 'https://neyronych-app.onrender.com'
 
+// Цены — должны совпадать с бэкендом (main.py) и с текстом оферты (public/oferta.html)
+type PayMethod = 'stars' | 'robokassa'
+const PRICE_SUB_RUB = 150
+const PRICE_PREMIUM_RUB = 100
+const PRICE_SUB_STARS = 100
+const PRICE_PREMIUM_STARS = 70
+
 type WarmupQuestion = { question: { ru: string; en: string }; options: string[]; correct: string }
 
 function makeWarmupOptions(correct: number): string[] {
@@ -236,7 +243,9 @@ const I18N = {
     trialOverTitle: 'Пробный период закончился',
     trialOverSubtitle: 'Оформи подписку, чтобы продолжить тренировки',
     payWithStars: 'Оплатить Stars',
-    payWithCrypto: 'Оплатить криптой',
+    payWithCard: 'Оплатить картой',
+    offerLink: 'Оферта, оплата и возврат',
+    privacyLink: 'Политика конфиденциальности',
     premiumLockedNoSub: 'Доступно по подписке',
     premiumBuyTitle: 'Открой премиум-темы',
     premiumBuySubtitle: 'Матрицы и Скорочтение — разово и навсегда',
@@ -292,7 +301,9 @@ const I18N = {
     trialOverTitle: 'Your trial has ended',
     trialOverSubtitle: 'Subscribe to keep training',
     payWithStars: 'Pay with Stars',
-    payWithCrypto: 'Pay with crypto',
+    payWithCard: 'Pay by card',
+    offerLink: 'Terms, payment and refunds',
+    privacyLink: 'Privacy policy',
     premiumLockedNoSub: 'Requires subscription',
     premiumBuyTitle: 'Unlock premium topics',
     premiumBuySubtitle: 'Matrices and Speed reading — one-time, forever',
@@ -709,6 +720,7 @@ function AppInner() {
   const [timeLeft, setTimeLeft] = useState<number | null>(null)
   const [access, setAccess] = useState<AccessStatus | null>(loadAccessCache)
   const [payLoading, setPayLoading] = useState(false)
+  const awaitingCardPaymentRef = useRef(false)
   const [referralStats, setReferralStats] = useState<ReferralStats | null>(null)
   const [linkCopied, setLinkCopied] = useState(false)
 
@@ -877,11 +889,30 @@ function AppInner() {
         window.open(url, '_blank')
       }
     } else {
+      awaitingCardPaymentRef.current = true
       tg?.openLink ? tg.openLink(url) : window.open(url, '_blank')
     }
   }
 
-  const paySubscription = (method: 'stars' | 'crypto') => {
+  // Оплата картой идёт во внешнем браузере — когда пользователь вернулся в приложение, проверяем доступ заново
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || !awaitingCardPaymentRef.current || userId === null) return
+      refreshAccess(userId)
+      setTimeout(() => refreshAccess(userId), 5000)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId])
+
+  const openLegalPage = (page: 'oferta' | 'privacy') => {
+    const url = `${window.location.origin}/${page}.html`
+    const tg = window.Telegram?.WebApp
+    tg?.openLink ? tg.openLink(url) : window.open(url, '_blank')
+  }
+
+  const paySubscription = (method: PayMethod) => {
     if (userId === null) return
     setPayLoading(true)
     fetch(`${API_URL}/api/pay/${method}/subscription`, {
@@ -893,7 +924,7 @@ function AppInner() {
       .catch(() => { setPayLoading(false); openPayLink(undefined) })
   }
 
-  const payPremium = (method: 'stars' | 'crypto') => {
+  const payPremium = (method: PayMethod) => {
     if (userId === null) return
     setPayLoading(true)
     fetch(`${API_URL}/api/pay/${method}/premium`, {
@@ -1314,6 +1345,14 @@ function AppInner() {
   }
 
   const s = getStyles(c)
+
+  const legalLinks = (
+    <p style={{ marginTop: '1.25rem', fontSize: '0.78rem', lineHeight: 1.6, color: c.textSecondary, position: 'relative', zIndex: 1 }}>
+      <span style={{ textDecoration: 'underline', cursor: 'pointer' }} onClick={() => openLegalPage('oferta')}>{t.offerLink}</span>
+      {' · '}
+      <span style={{ textDecoration: 'underline', cursor: 'pointer' }} onClick={() => openLegalPage('privacy')}>{t.privacyLink}</span>
+    </p>
+  )
 
   // Достижения считаются здесь, на телефоне — без запросов к серверу
   let achStates: AchievementState[] = []
@@ -1948,8 +1987,9 @@ function AppInner() {
           <div style={s.welcomeEmoji}>⏳</div>
           <h1 style={s.welcomeTitle}>{t.trialOverTitle}</h1>
           <p style={s.welcomeSubtitle}>{t.trialOverSubtitle}</p>
-          <button style={s.nextButton} disabled={payLoading} onClick={() => paySubscription('stars')}>⭐ {payLoading ? t.creatingInvoice : t.payWithStars}</button>
-          <button style={{ ...s.nextButton, marginTop: '0.75rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, color: c.text }} disabled={payLoading} onClick={() => paySubscription('crypto')}>💎 {payLoading ? t.creatingInvoice : t.payWithCrypto}</button>
+          <button style={s.nextButton} disabled={payLoading} onClick={() => paySubscription('robokassa')}>💳 {payLoading ? t.creatingInvoice : `${t.payWithCard} — ${PRICE_SUB_RUB} ₽`}</button>
+          <button style={{ ...s.nextButton, marginTop: '0.75rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, color: c.text }} disabled={payLoading} onClick={() => paySubscription('stars')}>⭐ {payLoading ? t.creatingInvoice : `${t.payWithStars} — ${PRICE_SUB_STARS} ⭐`}</button>
+          {legalLinks}
         </div>
       )}
 
@@ -1958,8 +1998,9 @@ function AppInner() {
           <div style={s.welcomeEmoji}>💎</div>
           <h1 style={s.welcomeTitle}>{t.premiumBuyTitle}</h1>
           <p style={s.welcomeSubtitle}>{t.premiumBuySubtitle}</p>
-          <button style={s.nextButton} disabled={payLoading} onClick={() => payPremium('stars')}>⭐ {payLoading ? t.creatingInvoice : t.payWithStars}</button>
-          <button style={{ ...s.nextButton, marginTop: '0.75rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, color: c.text }} disabled={payLoading} onClick={() => payPremium('crypto')}>💎 {payLoading ? t.creatingInvoice : t.payWithCrypto}</button>
+          <button style={s.nextButton} disabled={payLoading} onClick={() => payPremium('robokassa')}>💳 {payLoading ? t.creatingInvoice : `${t.payWithCard} — ${PRICE_PREMIUM_RUB} ₽`}</button>
+          <button style={{ ...s.nextButton, marginTop: '0.75rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, color: c.text }} disabled={payLoading} onClick={() => payPremium('stars')}>⭐ {payLoading ? t.creatingInvoice : `${t.payWithStars} — ${PRICE_PREMIUM_STARS} ⭐`}</button>
+          {legalLinks}
           <button style={s.backButtonStatic} onClick={() => setScreen('topic')}>{t.back}</button>
         </div>
       )}

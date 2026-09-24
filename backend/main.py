@@ -1,6 +1,9 @@
 import os
+import re
 import hashlib
 import hmac
+import logging
+from urllib.parse import quote
 import httpx
 
 from fastapi import FastAPI, HTTPException, Request
@@ -34,14 +37,36 @@ CLIENT_TOPICS = {
 }
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-CRYPTOBOT_TOKEN = os.environ.get("CRYPTOBOT_TOKEN", "")
 ROBOKASSA_LOGIN = os.environ.get("ROBOKASSA_LOGIN", "")
 ROBOKASSA_PASSWORD1 = os.environ.get("ROBOKASSA_PASSWORD1", "")
 ROBOKASSA_PASSWORD2 = os.environ.get("ROBOKASSA_PASSWORD2", "")
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+# ROBOKASSA_TEST=1 — тестовый режим Робокассы (тогда ROBOKASSA_PASSWORD1/2 должны быть тестовыми паролями)
+ROBOKASSA_TEST = os.environ.get("ROBOKASSA_TEST", "") == "1"
+# Адрес страницы с офертой (например https://<сайт>.vercel.app/oferta.html) — кнопка в ответе на /start
+OFFER_URL = os.environ.get("OFFER_URL", "")
 
 SUBSCRIPTION_STARS = 100
 PREMIUM_STARS = 70
+# Цены в рублях — должны совпадать с приложением и с офертой
+SUBSCRIPTION_RUB = 150
+PREMIUM_RUB = 100
+
+# Ссылка на Mini App для кнопки в ответе на /start.
+# По умолчанию — прямая ссылка Telegram (та же, что в реферальных ссылках приложения).
+# Если задать MINI_APP_URL (адрес сайта на Vercel), кнопка будет открывать его как web_app.
+MINI_APP_LINK = os.environ.get("MINI_APP_LINK", "https://t.me/neyronych18_bot/app")
+MINI_APP_URL = os.environ.get("MINI_APP_URL", "")
+
+START_TEXT = (
+    "Привет! Я Нейроныч 🧠\n\n"
+    "Тренажёр мозга прямо в Telegram: память, внимание, логика и счёт — "
+    "всего 5 минут в день.\n\n"
+    "Первые 3 дня бесплатно. Жми кнопку ниже, чтобы начать 👇"
+)
+OTHER_TEXT = "Все тренировки — внутри приложения. Жми кнопку ниже 👇"
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @app.on_event("startup")
@@ -276,78 +301,69 @@ async def telegram_webhook(request: Request):
             grant_premium_topics(user_id)
         return {"ok": True}
 
-    return {"ok": True}
-
-
-# ===== CryptoBot (крипта) =====
-
-@app.post("/api/pay/crypto/subscription")
-async def create_crypto_subscription_invoice(payload: PaySubscribeRequest):
-    return await _create_crypto_invoice(payload.user_id, "subscription", 150, "Подписка Нейроныч на 30 дней")
-
-
-@app.post("/api/pay/crypto/premium")
-async def create_crypto_premium_invoice(payload: PayPremiumRequest):
-    return await _create_crypto_invoice(payload.user_id, "premium", 100, "Премиум-темы Нейроныч")
-
-
-async def _create_crypto_invoice(user_id: int, kind: str, amount_rub: int, description: str):
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://pay.crypt.bot/api/createInvoice",
-            headers={"Crypto-Pay-API-Token": CRYPTOBOT_TOKEN},
-            json={
-                "currency_type": "fiat",
-                "fiat": "RUB",
-                "amount": str(amount_rub),
-                "accepted_assets": "USDT,TON,BTC",
-                "description": description,
-                "payload": f"{kind}:{user_id}",
-                "expires_in": 1800,
-            },
-        )
-    data = resp.json()
-    if not data.get("ok"):
-        raise HTTPException(status_code=400, detail=data.get("error", "CryptoBot error"))
-    return {"pay_url": data["result"]["bot_invoice_url"]}
-
-
-@app.post("/api/pay/crypto/webhook")
-async def crypto_webhook(request: Request):
-    body = await request.body()
-    signature = request.headers.get("crypto-pay-api-signature", "")
-
-    check = hmac.new(
-        hashlib.sha256(CRYPTOBOT_TOKEN.encode()).digest(),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(check, signature):
-        raise HTTPException(status_code=403, detail="Invalid signature")
-
-    update = await request.json()
-    if update.get("update_type") == "invoice_paid":
-        invoice = update["payload"]
-        kind, user_id_str = invoice["payload"].split(":")
-        user_id = int(user_id_str)
-        if kind == "subscription":
-            activate_subscription(user_id, days=30)
-        elif kind == "premium":
-            grant_premium_topics(user_id)
+    # Любое текстовое сообщение в личке (/start или просто "привет") —
+    # отвечаем приветствием и кнопкой, которая открывает Mini App.
+    chat = message.get("chat", {})
+    text = (message.get("text") or "").strip()
+    if chat.get("type") == "private" and chat.get("id") and text:
+        await _reply_with_app_button(chat["id"], text)
 
     return {"ok": True}
+
+
+def _app_button(start_arg: str) -> dict:
+    if MINI_APP_URL:
+        return {"text": "🧠 Открыть Нейроныч", "web_app": {"url": MINI_APP_URL}}
+    link = MINI_APP_LINK
+    # Реферальный код из /start ref_123 пробрасываем в Mini App.
+    if re.fullmatch(r"ref_\d+", start_arg):
+        link = f"{MINI_APP_LINK}?startapp={start_arg}"
+    return {"text": "🧠 Открыть Нейроныч", "url": link}
+
+
+def _keyboard(start_arg: str) -> list:
+    rows = [[_app_button(start_arg)]]
+    if OFFER_URL:
+        rows.append([{"text": "📄 Оферта, оплата и возврат", "url": OFFER_URL}])
+    return rows
+
+
+async def _reply_with_app_button(chat_id: int, text: str):
+    if text.startswith("/start"):
+        parts = text.split(maxsplit=1)
+        start_arg = parts[1] if len(parts) > 1 else ""
+        reply = START_TEXT
+    else:
+        start_arg = ""
+        reply = OTHER_TEXT
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": reply,
+                    "reply_markup": {"inline_keyboard": _keyboard(start_arg)},
+                },
+            )
+        if not resp.json().get("ok"):
+            logger.warning("sendMessage failed: %s", resp.text)
+    except Exception:
+        # Telegram-у всё равно отвечаем 200, иначе он будет присылать это сообщение повторно.
+        logger.exception("sendMessage error")
 
 
 # ===== Робокасса =====
 
 @app.post("/api/pay/robokassa/subscription")
 async def create_robokassa_subscription(payload: PaySubscribeRequest):
-    return _create_robokassa_link(payload.user_id, "subscription", 150, "Подписка Нейроныч на 30 дней")
+    return _create_robokassa_link(payload.user_id, "subscription", SUBSCRIPTION_RUB, "Подписка Нейроныч на 30 дней")
 
 
 @app.post("/api/pay/robokassa/premium")
 async def create_robokassa_premium(payload: PayPremiumRequest):
-    return _create_robokassa_link(payload.user_id, "premium", 100, "Премиум-темы Нейроныч")
+    return _create_robokassa_link(payload.user_id, "premium", PREMIUM_RUB, "Премиум-темы Нейроныч")
 
 
 def _create_robokassa_link(user_id: int, kind: str, amount: int, description: str):
@@ -359,8 +375,10 @@ def _create_robokassa_link(user_id: int, kind: str, amount: int, description: st
     pay_url = (
         f"https://auth.robokassa.ru/Merchant/Index.aspx"
         f"?MerchantLogin={ROBOKASSA_LOGIN}&OutSum={out_sum}&InvId={inv_id}"
-        f"&Description={description}&SignatureValue={signature}"
+        f"&Description={quote(description)}&SignatureValue={signature}"
     )
+    if ROBOKASSA_TEST:
+        pay_url += "&IsTest=1"
     return {"pay_url": pay_url}
 
 
