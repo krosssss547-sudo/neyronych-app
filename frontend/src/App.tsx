@@ -1,4 +1,4 @@
-import { Component, Suspense, lazy, memo, useEffect, useRef, useState } from 'react'
+import { Component, Fragment, Suspense, lazy, memo, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { generateMatrix, loadMatrixProfile, saveMatrixProfile, recordMatrixResult, getRank, analyzeProfile, kindLabel, PERFECT_SERIES_POINTS, FAST_BONUS_XP } from './matrices'
 import type { MatrixProfile } from './matrices'
@@ -1546,7 +1546,7 @@ function AppInner() {
       return (
         <>
           {header}
-          <p style={{ fontSize: '0.85rem', color: c.textSecondary, margin: '0 0 1rem' }}>{gPhase === 'watch' ? game.intro : game.question}</p>
+          <p key={gameKey} style={{ fontSize: '0.85rem', color: c.textSecondary, margin: '0 0 1rem' }}>{gPhase === 'watch' ? game.intro : game.question}</p>
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${size}, 1fr)`, gap: '8px', maxWidth: '280px', margin: '0 auto 1rem', position: 'relative', zIndex: 1 }}>
             {Array.from({ length: total }, (_, i) => {
               const lit = corsiShowIdx === i
@@ -1579,7 +1579,7 @@ function AppInner() {
           <p style={{ fontSize: '0.8rem', fontWeight: 500, margin: '0 0 0.5rem', minHeight: '1.1em', color: !answerResult && timeLeft !== null && timeLeft <= 5 ? RED : c.textSecondary }}>
             {!answerResult && timeLeft !== null ? `⏱ ${t.timeLeftLabel}: ${timeLeft}` : ''}
           </p>
-          <p style={{ ...s.question, marginTop: 0, marginBottom: '1rem' }}>{game.question} <span style={{ color: NEON, fontSize: '0.85rem' }}>→ {schulteNext}</span></p>
+          <p key={gameKey} style={{ ...s.question, marginTop: 0, marginBottom: '1rem' }}>{game.question} <span style={{ color: NEON, fontSize: '0.85rem' }}>→ {schulteNext}</span></p>
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '6px', maxWidth: '380px', margin: '0 auto', position: 'relative', zIndex: 1 }}>
             {numbers.map((n, i) => {
               const done = n < schulteNext
@@ -1605,7 +1605,7 @@ function AppInner() {
           <p style={{ fontSize: '0.8rem', fontWeight: 500, margin: '0 0 0.5rem', minHeight: '1.1em', color: !answerResult && timeLeft !== null && timeLeft <= 3 ? RED : c.textSecondary }}>
             {!answerResult && timeLeft !== null ? `⏱ ${t.timeLeftLabel}: ${timeLeft}` : ''}
           </p>
-          <p style={s.question}>{game.question}</p>
+          <p key={gameKey} style={s.question}>{game.question}</p>
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: '6px', maxWidth: '380px', margin: '0 auto', position: 'relative', zIndex: 1 }}>
             {cells.map((cell, i) => {
               const isPicked = selectedAnswer === String(i)
@@ -1643,7 +1643,7 @@ function AppInner() {
             {!answerResult && timeLeft !== null && (
               <p style={{ fontSize: '0.8rem', fontWeight: 500, margin: '0 0 0.5rem', minHeight: '1.1em', color: timeLeft <= 3 ? RED : c.textSecondary }}>⏱ {t.timeLeftLabel}: {timeLeft}</p>
             )}
-            <p style={{ ...s.question, color: game.questionColor && !answerResult ? game.questionColor : c.text }}>{game.question}</p>
+            <p key={gameKey} style={{ ...s.question, color: game.questionColor && !answerResult ? game.questionColor : c.text }}>{game.question}</p>
             <div style={s.gridAnswers}>
               {game.options.map((opt, i) => {
                 const isSelected = selectedAnswer === opt
@@ -2061,7 +2061,9 @@ function AppInner() {
       {screen === 'task' && selectedTopic && isGameTopic(selectedTopic) && game && (
         <div className="screen-anim">
           <button style={s.backButton} onClick={leaveTask}>{t.back}</button>
-          {renderGame()}
+          {/* key={gameKey}: на каждом новом задании экран игры создаётся заново целиком,
+              чтобы на телефоне не оставался текст вопроса от прошлого задания */}
+          <Fragment key={gameKey}>{renderGame()}</Fragment>
         </div>
       )}
 
