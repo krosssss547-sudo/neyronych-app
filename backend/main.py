@@ -495,6 +495,7 @@ async def robokassa_result(request: Request):
 
     check = hashlib.md5(f"{out_sum}:{inv_id}:{ROBOKASSA_PASSWORD2}".encode()).hexdigest()
     if check.lower() != signature.lower():
+        logger.warning("Robokassa result: BAD SIGN for InvId=%s OutSum=%s — проверь ROBOKASSA_PASSWORD2", inv_id, out_sum)
         return "bad sign"
 
     invoice = get_invoice(int(inv_id))
@@ -507,4 +508,5 @@ async def robokassa_result(request: Request):
         grant_premium_topics(invoice["user_id"])
 
     mark_invoice_credited(int(inv_id))
+    logger.info("Robokassa result: оплата InvId=%s (%s) зачислена пользователю %s", inv_id, invoice["kind"], invoice["user_id"])
     return f"OK{inv_id}"
