@@ -38,11 +38,11 @@ CLIENT_TOPICS = {
     "memory", "attention", "logic", "math",
 }
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ROBOKASSA_LOGIN = os.environ.get("ROBOKASSA_LOGIN", "")
-ROBOKASSA_PASSWORD1 = os.environ.get("ROBOKASSA_PASSWORD1", "")
-ROBOKASSA_PASSWORD2 = os.environ.get("ROBOKASSA_PASSWORD2", "")
-TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+ROBOKASSA_LOGIN = os.environ.get("ROBOKASSA_LOGIN", "").strip()
+ROBOKASSA_PASSWORD1 = os.environ.get("ROBOKASSA_PASSWORD1", "").strip()
+ROBOKASSA_PASSWORD2 = os.environ.get("ROBOKASSA_PASSWORD2", "").strip()
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
 # ROBOKASSA_TEST=1 — тестовый режим Робокассы (тогда ROBOKASSA_PASSWORD1/2 должны быть тестовыми паролями)
 ROBOKASSA_TEST = os.environ.get("ROBOKASSA_TEST", "") == "1"
 # Адрес страницы с офертой (например https://<сайт>.vercel.app/oferta.html) — кнопка в ответе на /start
