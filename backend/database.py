@@ -7,6 +7,19 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 TRIAL_DAYS = 3
 REFERRAL_REWARD_DAYS = 2
 REFERRAL_XP_THRESHOLD = 400  # 5 уровень
+MSK_OFFSET = timedelta(hours=3)
+
+
+def today_msk() -> date:
+    """Сегодняшняя дата по Москве — стрик считается по московским дням, а не по UTC."""
+    return (datetime.utcnow() + MSK_OFFSET).date()
+
+
+def effective_streak(current_streak: int, last_active_date) -> int:
+    """Если последний активный день был раньше вчерашнего — серия уже прервана, показываем 0."""
+    if not last_active_date or (today_msk() - last_active_date).days > 1:
+        return 0
+    return current_streak or 0
 
 
 def get_conn():
@@ -194,9 +207,9 @@ def update_streak(user_id: int):
         return
 
     last_date = row["last_active_date"]
-    current_streak = row["current_streak"]
-    longest_streak = row["longest_streak"]
-    today = date.today()
+    current_streak = row["current_streak"] or 0
+    longest_streak = row["longest_streak"] or 0
+    today = today_msk()
 
     if last_date:
         if last_date == today:
@@ -225,7 +238,7 @@ def get_user_stats(user_id: int):
     conn = get_conn()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT current_streak, longest_streak, total_xp FROM users WHERE user_id = %s", (user_id,))
+    cursor.execute("SELECT current_streak, longest_streak, last_active_date, total_xp FROM users WHERE user_id = %s", (user_id,))
     user_row = cursor.fetchone()
 
     cursor.execute(
@@ -250,7 +263,7 @@ def get_user_stats(user_id: int):
     xp_into_level = total_xp % 100
 
     return {
-        "current_streak": user_row["current_streak"] if user_row else 0,
+        "current_streak": effective_streak(user_row["current_streak"], user_row["last_active_date"]) if user_row else 0,
         "longest_streak": user_row["longest_streak"] if user_row else 0,
         "total_xp": total_xp,
         "level": level,
@@ -266,11 +279,12 @@ def get_leaderboard(limit: int = 10):
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT user_id, username, total_xp, current_streak
+        SELECT user_id, username, total_xp,
+               CASE WHEN last_active_date >= %s THEN current_streak ELSE 0 END AS current_streak
         FROM users
         ORDER BY total_xp DESC
         LIMIT %s
-    """, (limit,))
+    """, (today_msk() - timedelta(days=1), limit))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -298,10 +312,11 @@ def get_admin_overview():
     cursor.execute("SELECT COUNT(*) as cnt FROM users")
     total_users = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date = CURRENT_DATE")
+    today = today_msk()
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date = %s", (today,))
     active_today = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date >= CURRENT_DATE - INTERVAL '7 days'")
+    cursor.execute("SELECT COUNT(*) as cnt FROM users WHERE last_active_date >= %s", (today - timedelta(days=7),))
     active_7d = cursor.fetchone()["cnt"]
 
     cursor.execute("SELECT COUNT(*) as cnt, SUM(CASE WHEN is_correct THEN 1 ELSE 0 END) as correct FROM user_answers")
@@ -310,9 +325,10 @@ def get_admin_overview():
     total_correct = row["correct"] or 0
 
     cursor.execute("""
-        SELECT user_id, username, total_xp, current_streak
+        SELECT user_id, username, total_xp,
+               CASE WHEN last_active_date >= %s THEN current_streak ELSE 0 END AS current_streak
         FROM users ORDER BY total_xp DESC LIMIT 10
-    """)
+    """, (today - timedelta(days=1),))
     top_users = [dict(r) for r in cursor.fetchall()]
 
     cursor.close()

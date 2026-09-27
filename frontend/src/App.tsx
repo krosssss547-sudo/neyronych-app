@@ -806,6 +806,8 @@ function AppInner() {
           setAccess(data)
           saveAccessCache(data)
           void flushQueue()
+          // вход уже засчитан в стрик на сервере — обновляем цифры в шапке
+          fetchTopBarStats(uid)
         })
         .catch(() => {
           if (cancelled || attempt >= 8) return

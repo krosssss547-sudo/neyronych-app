@@ -119,6 +119,8 @@ async def ping():
 @app.post("/api/user/init")
 async def init_user(payload: UserInit):
     add_user_if_not_exists(payload.user_id, payload.username, payload.referrer_id)
+    # Стрик — за ежедневный вход: каждое открытие приложения засчитывает сегодняшний день
+    update_streak(payload.user_id)
     return {"ok": True}
 
 
