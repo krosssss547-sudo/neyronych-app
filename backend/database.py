@@ -803,3 +803,56 @@ def set_user_flag(user_id: int, flag: str, value: bool):
     conn.commit()
     cursor.close()
     conn.close()
+
+
+# ===== Сводка для админа (/stats в боте) =====
+
+def get_bot_stats() -> dict:
+    today = today_msk()
+    week_ago = today - timedelta(days=6)
+    now = datetime.utcnow()
+    conn = get_conn()
+    cursor = conn.cursor()
+
+    def one(query, params=()):
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        return list(row.values())[0] if row else 0
+
+    msk_day = "(created_at + INTERVAL '3 hours')::date"
+    stats = {
+        "total_users": one("SELECT COUNT(*) AS c FROM users"),
+        "new_today": one(f"SELECT COUNT(*) AS c FROM users WHERE {msk_day} = %s", (today,)),
+        "new_week": one(f"SELECT COUNT(*) AS c FROM users WHERE {msk_day} >= %s", (week_ago,)),
+        "active_today": one("SELECT COUNT(*) AS c FROM users WHERE last_active_date = %s", (today,)),
+        "active_week": one("SELECT COUNT(*) AS c FROM users WHERE last_active_date >= %s", (week_ago,)),
+        "subscriptions": one("SELECT COUNT(*) AS c FROM users WHERE subscription_expires_at > %s", (now,)),
+        "daily_today": one("SELECT COUNT(*) AS c FROM daily_results WHERE day = %s", (today,)),
+        "duels_today": one(f"SELECT COUNT(*) AS c FROM duels WHERE finished_at IS NOT NULL AND (finished_at + INTERVAL '3 hours')::date = %s", (today,)),
+        "card_payments_week": one(f"SELECT COUNT(*) AS c FROM payment_invoices WHERE credited = TRUE AND {msk_day} >= %s", (week_ago,)),
+        "card_revenue_week": one(f"SELECT COALESCE(SUM(amount), 0) AS c FROM payment_invoices WHERE credited = TRUE AND {msk_day} >= %s", (week_ago,)),
+    }
+    cursor.close()
+    conn.close()
+    return stats
+
+
+def list_users(offset: int = 0, limit: int = 25) -> dict:
+    """Все пользователи для админ-команды /users (сначала новые). user_id = 0 — не человек, а заход без Telegram."""
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) AS c FROM users WHERE user_id <> 0")
+    total = cursor.fetchone()["c"]
+    cursor.execute("""
+        SELECT user_id, username, total_xp, current_streak, last_active_date, streak_freezes,
+               subscription_expires_at, owns_premium_topics, created_at
+        FROM users WHERE user_id <> 0
+        ORDER BY created_at DESC, user_id DESC
+        LIMIT %s OFFSET %s
+    """, (limit, offset))
+    rows = [dict(r) for r in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    for r in rows:
+        r["streak"] = effective_streak(r["current_streak"], r["last_active_date"], r["streak_freezes"])
+    return {"total": total, "rows": rows}

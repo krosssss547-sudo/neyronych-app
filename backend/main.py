@@ -23,7 +23,7 @@ from database import (
     find_user, refresh_username, get_subscription_expiry,
     today_msk, add_streak_freeze, submit_daily, get_daily_status,
     create_duel, get_duel, save_duel_result,
-    get_reminder_targets, mark_reminded, set_user_flag,
+    get_reminder_targets, mark_reminded, set_user_flag, get_bot_stats, list_users,
 )
 from tasks_data import TASKS
 
@@ -564,10 +564,12 @@ async def _send_message(chat_id: int, text: str, keyboard: list | None = None) -
 
 # ===== Админ-команды: бесплатная выдача подписки и премиум-тем =====
 
-ADMIN_COMMANDS = {"/admin", "/grant", "/grant_premium", "/user"}
+ADMIN_COMMANDS = {"/admin", "/grant", "/grant_premium", "/user", "/stats", "/users"}
 
 ADMIN_HELP = (
     "Админ-команды:\n\n"
+    "/stats — сводка: люди, активность, подписки, оплаты\n"
+    "/users — список всех пользователей (сначала новые), /users 2 — следующая страница\n"
     "/grant @username 30 — выдать подписку на 30 дней (дни прибавляются к остатку)\n"
     "/grant_premium @username — выдать премиум-темы\n"
     "/user @username — посмотреть подписку пользователя\n\n"
@@ -588,8 +590,70 @@ def _fmt_date(dt) -> str:
     return (dt + timedelta(hours=3)).strftime("%d.%m.%Y") if dt else "—"
 
 
+def _format_stats(st: dict) -> str:
+    revenue = int(st["card_revenue_week"] or 0)
+    return (
+        "📊 Нейроныч — сводка\n\n"
+        f"👥 Всего пользователей: {st['total_users']}\n"
+        f"🆕 Новых сегодня: {st['new_today']} · за 7 дней: {st['new_week']}\n"
+        f"🔥 Заходили сегодня: {st['active_today']} · за 7 дней: {st['active_week']}\n\n"
+        f"🏆 Прошли испытание дня: {st['daily_today']}\n"
+        f"⚔️ Дуэлей сыграно сегодня: {st['duels_today']}\n\n"
+        f"💎 Активных подписок: {st['subscriptions']}\n"
+        f"💳 Оплат картой за 7 дней: {st['card_payments_week']} на {revenue} ₽\n"
+        "(оплаты звёздами Telegram в эту сводку не попадают)"
+    )
+
+
+USERS_PAGE = 25
+
+
+def _format_users(data: dict, page: int) -> str:
+    total = data["total"]
+    pages = max(1, (total + USERS_PAGE - 1) // USERS_PAGE)
+    if not data["rows"]:
+        return f"На странице {page} никого нет. Всего пользователей: {total}, страниц: {pages}."
+    now = datetime.utcnow()
+    lines = [f"👥 Пользователи: {total} (стр. {page} из {pages}, сначала новые)\n"]
+    for i, u in enumerate(data["rows"], start=(page - 1) * USERS_PAGE + 1):
+        name = f"@{u['username']}" if u.get("username") else f"ID {u['user_id']}"
+        parts = [f"{i}. {name}", f"{u.get('total_xp') or 0} XP"]
+        if u.get("streak"):
+            parts.append(f"🔥{u['streak']}")
+        sub = u.get("subscription_expires_at")
+        if sub and sub > now:
+            parts.append(f"💎 до {_fmt_date(sub)[:5]}")
+        if u.get("owns_premium_topics"):
+            parts.append("✨")
+        last = u.get("last_active_date")
+        parts.append(f"был {last.strftime('%d.%m')}" if last else "не играл")
+        if u.get("created_at"):
+            parts.append(f"с {_fmt_date(u['created_at'])[:5]}")
+        lines.append(" · ".join(parts))
+    if page < pages:
+        lines.append(f"\nДальше: /users {page + 1}")
+    lines.append("\n💎 — подписка, ✨ — премиум-темы, 🔥 — серия дней")
+    return "\n".join(lines)
+
+
 async def _handle_admin_command(chat_id: int, command: str, text: str):
     args = text.split()[1:]
+    if command == "/users":
+        page = int(args[0]) if args and args[0].isdigit() and int(args[0]) > 0 else 1
+        try:
+            data = list_users((page - 1) * USERS_PAGE, USERS_PAGE)
+            await _send_message(chat_id, _format_users(data, page))
+        except Exception:
+            logger.exception("users list error")
+            await _send_message(chat_id, "⚠️ Не получилось получить список, попробуй ещё раз.")
+        return
+    if command == "/stats":
+        try:
+            await _send_message(chat_id, _format_stats(get_bot_stats()))
+        except Exception:
+            logger.exception("stats error")
+            await _send_message(chat_id, "⚠️ Не получилось собрать статистику, попробуй ещё раз.")
+        return
     if command == "/admin" or not args:
         await _send_message(chat_id, ADMIN_HELP)
         return
