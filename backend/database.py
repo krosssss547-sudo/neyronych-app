@@ -1,4 +1,5 @@
 import os
+import secrets
 import psycopg2
 import psycopg2.extras
 from datetime import date, datetime, timedelta
@@ -8,6 +9,8 @@ TRIAL_DAYS = 3
 REFERRAL_REWARD_DAYS = 2
 REFERRAL_XP_THRESHOLD = 400  # 5 уровень
 MSK_OFFSET = timedelta(hours=3)
+WEEKLY_FREE_FREEZES_MAX = 2   # сколько бесплатных заморозок может накопиться у подписчика
+FREEZES_MAX = 10              # общий потолок (с купленными)
 
 
 def today_msk() -> date:
@@ -15,11 +18,14 @@ def today_msk() -> date:
     return (datetime.utcnow() + MSK_OFFSET).date()
 
 
-def effective_streak(current_streak: int, last_active_date) -> int:
-    """Если последний активный день был раньше вчерашнего — серия уже прервана, показываем 0."""
-    if not last_active_date or (today_msk() - last_active_date).days > 1:
+def effective_streak(current_streak: int, last_active_date, freezes: int = 0) -> int:
+    """Стрик, который видит игрок. Если пропущены дни и заморозок не хватит их закрыть — серия прервана, показываем 0."""
+    if not last_active_date or not current_streak:
         return 0
-    return current_streak or 0
+    gap = (today_msk() - last_active_date).days
+    if gap <= 1 or (freezes or 0) >= gap - 1:
+        return current_streak
+    return 0
 
 
 def get_conn():
@@ -97,6 +103,38 @@ def init_db():
     cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS owns_premium_topics INTEGER DEFAULT 0")
     cursor.execute("ALTER TABLE user_answers ADD COLUMN IF NOT EXISTS category TEXT")
     cursor.execute("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS credited BOOLEAN DEFAULT FALSE")
+    # Заморозки стрика и напоминания
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS streak_freezes INTEGER DEFAULT 0")
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS freeze_week TEXT")
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reminders_off BOOLEAN DEFAULT FALSE")
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_blocked BOOLEAN DEFAULT FALSE")
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_reminded_date DATE")
+    # Испытание дня: засчитывается только первая попытка за день
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS daily_results (
+            user_id BIGINT NOT NULL,
+            day DATE NOT NULL,
+            correct INTEGER NOT NULL,
+            time_ms INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, day)
+        )
+    """)
+    # Дуэли: один создаёт и проходит, второй проходит те же задания по ссылке
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS duels (
+            id TEXT PRIMARY KEY,
+            seed BIGINT NOT NULL,
+            creator_id BIGINT NOT NULL,
+            creator_correct INTEGER,
+            creator_time_ms INTEGER,
+            opponent_id BIGINT,
+            opponent_correct INTEGER,
+            opponent_time_ms INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP
+        )
+    """)
 
     conn.commit()
     cursor.close()
@@ -196,38 +234,75 @@ def add_xp(user_id: int, amount: int):
     check_referral_reward(user_id)
 
 
-def update_streak(user_id: int):
+def _iso_week(d: date) -> str:
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def update_streak(user_id: int) -> dict:
+    """Засчитывает сегодняшний день в стрик. Подписчикам раз в неделю даёт бесплатную заморозку.
+    Если пропущены дни, а заморозок хватает — тратит их и сохраняет серию. Возвращает {"freeze_used": N}."""
     conn = get_conn()
     cursor = conn.cursor()
-    cursor.execute("SELECT last_active_date, current_streak, longest_streak FROM users WHERE user_id = %s", (user_id,))
+    cursor.execute("""
+        SELECT last_active_date, current_streak, longest_streak, streak_freezes, freeze_week, subscription_expires_at
+        FROM users WHERE user_id = %s
+    """, (user_id,))
     row = cursor.fetchone()
     if not row:
         cursor.close()
         conn.close()
-        return
+        return {"freeze_used": 0}
 
-    last_date = row["last_active_date"]
-    current_streak = row["current_streak"] or 0
-    longest_streak = row["longest_streak"] or 0
     today = today_msk()
+    last_date = row["last_active_date"]
+    current = row["current_streak"] or 0
+    longest = row["longest_streak"] or 0
+    freezes = row["streak_freezes"] or 0
+    freeze_week = row["freeze_week"]
+    changed = False
 
-    if last_date:
-        if last_date == today:
-            cursor.close()
-            conn.close()
-            return
-        elif (today - last_date).days == 1:
-            current_streak += 1
+    sub = row["subscription_expires_at"]
+    week = _iso_week(today)
+    if sub and sub > datetime.utcnow() and freeze_week != week:
+        freeze_week = week
+        freezes = max(freezes, min(freezes + 1, WEEKLY_FREE_FREEZES_MAX))
+        changed = True
+
+    used = 0
+    gap = (today - last_date).days if last_date else None
+    if gap is None:
+        current, changed = 1, True
+    elif gap >= 1:
+        if gap == 1:
+            current += 1
+        elif current > 0 and freezes >= gap - 1:
+            used = gap - 1
+            freezes -= used
+            current += 1
         else:
-            current_streak = 1
-    else:
-        current_streak = 1
+            current = 1
+        changed = True
 
-    longest_streak = max(longest_streak, current_streak)
+    if changed:
+        longest = max(longest, current)
+        cursor.execute("""
+            UPDATE users SET current_streak = %s, longest_streak = %s, last_active_date = %s,
+                             streak_freezes = %s, freeze_week = %s
+            WHERE user_id = %s
+        """, (current, longest, max(today, last_date) if last_date else today, freezes, freeze_week, user_id))
+        conn.commit()
+    cursor.close()
+    conn.close()
+    return {"freeze_used": used}
 
+
+def add_streak_freeze(user_id: int, count: int = 1):
+    conn = get_conn()
+    cursor = conn.cursor()
     cursor.execute(
-        "UPDATE users SET current_streak = %s, longest_streak = %s, last_active_date = %s WHERE user_id = %s",
-        (current_streak, longest_streak, today, user_id)
+        "UPDATE users SET streak_freezes = LEAST(COALESCE(streak_freezes, 0) + %s, %s) WHERE user_id = %s",
+        (count, FREEZES_MAX, user_id)
     )
     conn.commit()
     cursor.close()
@@ -238,7 +313,7 @@ def get_user_stats(user_id: int):
     conn = get_conn()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT current_streak, longest_streak, last_active_date, total_xp FROM users WHERE user_id = %s", (user_id,))
+    cursor.execute("SELECT current_streak, longest_streak, last_active_date, total_xp, streak_freezes FROM users WHERE user_id = %s", (user_id,))
     user_row = cursor.fetchone()
 
     cursor.execute(
@@ -263,7 +338,8 @@ def get_user_stats(user_id: int):
     xp_into_level = total_xp % 100
 
     return {
-        "current_streak": effective_streak(user_row["current_streak"], user_row["last_active_date"]) if user_row else 0,
+        "current_streak": effective_streak(user_row["current_streak"], user_row["last_active_date"], user_row["streak_freezes"]) if user_row else 0,
+        "streak_freezes": (user_row["streak_freezes"] or 0) if user_row else 0,
         "longest_streak": user_row["longest_streak"] if user_row else 0,
         "total_xp": total_xp,
         "level": level,
@@ -280,11 +356,11 @@ def get_leaderboard(limit: int = 10):
     cursor = conn.cursor()
     cursor.execute("""
         SELECT user_id, username, total_xp,
-               CASE WHEN last_active_date >= %s THEN current_streak ELSE 0 END AS current_streak
+               CASE WHEN last_active_date + 1 + COALESCE(streak_freezes, 0) >= %s THEN current_streak ELSE 0 END AS current_streak
         FROM users
         ORDER BY total_xp DESC
         LIMIT %s
-    """, (today_msk() - timedelta(days=1), limit))
+    """, (today_msk(), limit))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -326,9 +402,9 @@ def get_admin_overview():
 
     cursor.execute("""
         SELECT user_id, username, total_xp,
-               CASE WHEN last_active_date >= %s THEN current_streak ELSE 0 END AS current_streak
+               CASE WHEN last_active_date + 1 + COALESCE(streak_freezes, 0) >= %s THEN current_streak ELSE 0 END AS current_streak
         FROM users ORDER BY total_xp DESC LIMIT 10
-    """, (today - timedelta(days=1),))
+    """, (today,))
     top_users = [dict(r) for r in cursor.fetchall()]
 
     cursor.close()
@@ -565,3 +641,165 @@ def get_subscription_expiry(user_id: int):
     cursor.close()
     conn.close()
     return row["subscription_expires_at"] if row else None
+
+
+# ===== Испытание дня =====
+
+def _daily_standing(cursor, user_id: int, day: date) -> dict:
+    cursor.execute("SELECT correct, time_ms FROM daily_results WHERE user_id = %s AND day = %s", (user_id, day))
+    mine = cursor.fetchone()
+    cursor.execute("SELECT COUNT(*) AS cnt FROM daily_results WHERE day = %s", (day,))
+    participants = cursor.fetchone()["cnt"]
+    cursor.execute("""
+        SELECT u.username, d.correct, d.time_ms
+        FROM daily_results d LEFT JOIN users u ON u.user_id = d.user_id
+        WHERE d.day = %s ORDER BY d.correct DESC, d.time_ms ASC LIMIT 5
+    """, (day,))
+    top = [dict(r) for r in cursor.fetchall()]
+    result = {"day": day.isoformat(), "played": mine is not None, "participants": participants, "top": top}
+    if mine:
+        cursor.execute("""
+            SELECT COUNT(*) AS cnt FROM daily_results
+            WHERE day = %s AND (correct > %s OR (correct = %s AND time_ms < %s))
+        """, (day, mine["correct"], mine["correct"], mine["time_ms"]))
+        better = cursor.fetchone()["cnt"]
+        cursor.execute("""
+            SELECT COUNT(*) AS cnt FROM daily_results
+            WHERE day = %s AND (correct < %s OR (correct = %s AND time_ms > %s))
+        """, (day, mine["correct"], mine["correct"], mine["time_ms"]))
+        worse = cursor.fetchone()["cnt"]
+        others = participants - 1
+        result.update({
+            "correct": mine["correct"],
+            "time_ms": mine["time_ms"],
+            "rank": better + 1,
+            "better_than_pct": round(worse / others * 100) if others > 0 else 100,
+        })
+    return result
+
+
+def submit_daily(user_id: int, day: date, correct: int, time_ms: int) -> dict:
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO daily_results (user_id, day, correct, time_ms) VALUES (%s, %s, %s, %s)
+        ON CONFLICT (user_id, day) DO NOTHING
+    """, (user_id, day, correct, time_ms))
+    first_attempt = cursor.rowcount == 1
+    conn.commit()
+    result = _daily_standing(cursor, user_id, day)
+    result["first_attempt"] = first_attempt
+    cursor.close()
+    conn.close()
+    return result
+
+
+def get_daily_status(user_id: int, day: date) -> dict:
+    conn = get_conn()
+    cursor = conn.cursor()
+    result = _daily_standing(cursor, user_id, day)
+    cursor.close()
+    conn.close()
+    return result
+
+
+# ===== Дуэли =====
+
+def create_duel(creator_id: int) -> dict:
+    conn = get_conn()
+    cursor = conn.cursor()
+    duel_id = secrets.token_urlsafe(6).replace("-", "a").replace("_", "b")
+    seed = secrets.randbelow(2**31 - 1) + 1
+    cursor.execute("INSERT INTO duels (id, seed, creator_id) VALUES (%s, %s, %s)", (duel_id, seed, creator_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"id": duel_id, "seed": seed}
+
+
+def get_duel(duel_id: str):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT d.*, cu.username AS creator_username, ou.username AS opponent_username
+        FROM duels d
+        LEFT JOIN users cu ON cu.user_id = d.creator_id
+        LEFT JOIN users ou ON ou.user_id = d.opponent_id
+        WHERE d.id = %s
+    """, (duel_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return dict(row) if row else None
+
+
+def save_duel_result(duel_id: str, user_id: int, correct: int, time_ms: int) -> str:
+    """Возвращает роль игрока: 'creator', 'opponent' или ошибку: 'not_found', 'taken', 'own', 'not_ready'."""
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT creator_id, creator_correct, opponent_id FROM duels WHERE id = %s FOR UPDATE", (duel_id,))
+    row = cursor.fetchone()
+    role = "not_found"
+    if row:
+        if row["creator_id"] == user_id:
+            if row["creator_correct"] is None:
+                cursor.execute("UPDATE duels SET creator_correct = %s, creator_time_ms = %s WHERE id = %s",
+                               (correct, time_ms, duel_id))
+                role = "creator"
+            else:
+                role = "own"
+        elif row["creator_correct"] is None:
+            role = "not_ready"
+        elif row["opponent_id"] is None:
+            cursor.execute("""
+                UPDATE duels SET opponent_id = %s, opponent_correct = %s, opponent_time_ms = %s, finished_at = %s
+                WHERE id = %s
+            """, (user_id, correct, time_ms, datetime.utcnow(), duel_id))
+            role = "opponent"
+        else:
+            role = "taken"
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return role
+
+
+# ===== Напоминания =====
+
+def get_reminder_targets() -> list[dict]:
+    """Кому сегодня напомнить: вчера заходил (стрик под угрозой) или не заходил 3 дня."""
+    today = today_msk()
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user_id, current_streak, last_active_date, COALESCE(streak_freezes, 0) AS streak_freezes
+        FROM users
+        WHERE COALESCE(reminders_off, FALSE) = FALSE
+          AND COALESCE(bot_blocked, FALSE) = FALSE
+          AND (last_reminded_date IS NULL OR last_reminded_date < %s)
+          AND last_active_date IN (%s, %s)
+    """, (today, today - timedelta(days=1), today - timedelta(days=3)))
+    rows = [dict(r) for r in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return rows
+
+
+def mark_reminded(user_id: int):
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET last_reminded_date = %s WHERE user_id = %s", (today_msk(), user_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def set_user_flag(user_id: int, flag: str, value: bool):
+    if flag not in ("reminders_off", "bot_blocked"):
+        raise ValueError(flag)
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE users SET {flag} = %s WHERE user_id = %s", (value, user_id))
+    conn.commit()
+    cursor.close()
+    conn.close()

@@ -1,7 +1,7 @@
 // Игра «Слова»: анаграммы, пропущенные буквы, синонимы, антонимы, правописание,
 // игра в города и подсчёт букв. Все банки написаны вручную, слова только распространённые.
 
-import { rand, pickOne, shuffle, numberOptions, makeRecent } from './gamekit'
+import { rand, pickOne, shuffle, numberOptions, makeRecent, isSeeded } from './gamekit'
 import { XP_BY_LEVEL } from './gametypes'
 import type { GameTask, Level } from './gametypes'
 
@@ -617,7 +617,7 @@ const WEIGHTS: { kind: string; w: number }[] = [
 let lastKind = ''
 
 function pickKind(): string {
-  const options = WEIGHTS.filter((o) => o.kind !== lastKind)
+  const options = WEIGHTS.filter((o) => isSeeded() || o.kind !== lastKind)
   const sum = options.reduce((a, o) => a + o.w, 0)
   let r = Math.random() * sum
   for (const o of options) {

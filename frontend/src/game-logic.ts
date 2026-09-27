@@ -1,7 +1,7 @@
 // Тема «Логика»: генератор заданий на рассуждение (все задания создаются на лету).
 // Семь видов: порядок, вывод, аналогия, лишнее слово, буквенный ряд, дни недели, загаданное число.
 
-import { rand, shuffle, pickOne, uniqueOptions, numberOptions, makeRecent } from './gamekit'
+import { rand, shuffle, pickOne, uniqueOptions, numberOptions, makeRecent, isSeeded } from './gamekit'
 import { XP_BY_LEVEL } from './gametypes'
 import type { GameTask, Level } from './gametypes'
 
@@ -745,7 +745,7 @@ const WEIGHTS: { kind: string; w: number }[] = [
 let lastKind = ''
 
 function pickKind(): string {
-  const opts = WEIGHTS.filter((o) => o.kind !== lastKind)
+  const opts = WEIGHTS.filter((o) => isSeeded() || o.kind !== lastKind)
   let r = Math.random() * opts.reduce((a, o) => a + o.w, 0)
   for (const o of opts) {
     r -= o.w

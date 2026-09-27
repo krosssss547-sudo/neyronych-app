@@ -1,5 +1,46 @@
 // Мелкие общие помощники для генераторов заданий.
 
+// ───────── Детерминированная генерация (испытание дня, дуэли, возраст мозга) ─────────
+// Внутри withSeed(seed, fn) Math.random заменяется генератором с фиксированным зерном,
+// а «анти-повторы» (makeRecent, lastKind) отключаются — так у всех игроков получаются
+// одинаковые задания при одинаковом зерне.
+
+let seededDepth = 0
+export const isSeeded = (): boolean => seededDepth > 0
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+export function withSeed<T>(seed: number, fn: () => T): T {
+  const original = Math.random
+  Math.random = mulberry32(seed)
+  seededDepth++
+  try {
+    return fn()
+  } finally {
+    seededDepth--
+    Math.random = original
+  }
+}
+
+// Строка -> 32-битное число (для зерна из даты или id дуэли)
+export function hashString(str: string): number {
+  let h = 2166136261
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
 export const rand = (min: number, max: number): number => Math.floor(Math.random() * (max - min + 1)) + min
 
 export function shuffle<T>(arr: T[]): T[] {
@@ -51,8 +92,8 @@ export function numberOptions(correct: number, traps: number[], spread: number, 
 export function makeRecent(size: number) {
   const list: string[] = []
   return {
-    has: (id: string) => list.includes(id),
-    add: (id: string) => { list.push(id); if (list.length > size) list.shift() },
+    has: (id: string) => !isSeeded() && list.includes(id),
+    add: (id: string) => { if (isSeeded()) return; list.push(id); if (list.length > size) list.shift() },
     reset: () => { list.length = 0 },
   }
 }

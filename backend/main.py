@@ -2,6 +2,7 @@ import os
 import re
 import hashlib
 import hmac
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -19,7 +20,10 @@ from database import (
     get_admin_overview, start_trial_if_needed, get_access_status,
     activate_subscription, grant_premium_topics, get_referral_stats,
     create_payment_invoice, get_invoice, mark_invoice_credited,
-    find_user, refresh_username, get_subscription_expiry
+    find_user, refresh_username, get_subscription_expiry,
+    today_msk, add_streak_freeze, submit_daily, get_daily_status,
+    create_duel, get_duel, save_duel_result,
+    get_reminder_targets, mark_reminded, set_user_flag,
 )
 from tasks_data import TASKS
 
@@ -49,9 +53,12 @@ ROBOKASSA_TEST = os.environ.get("ROBOKASSA_TEST", "") == "1"
 OFFER_URL = os.environ.get("OFFER_URL", "")
 # Telegram ID админов через запятую — только им доступны /grant и другие админ-команды (свой ID покажет /myid)
 ADMIN_IDS = {int(x) for x in re.findall(r"\d+", os.environ.get("ADMIN_IDS", ""))}
+# Секрет для cron-job.org: /api/cron/remind?key=... (без него напоминания не рассылаются)
+CRON_SECRET = os.environ.get("CRON_SECRET", "").strip()
 
 SUBSCRIPTION_STARS = 100
 PREMIUM_STARS = 70
+FREEZE_STARS = 15
 # Цены в рублях — должны совпадать с приложением и с офертой
 SUBSCRIPTION_RUB = 150
 PREMIUM_RUB = 100
@@ -66,7 +73,8 @@ START_TEXT = (
     "Привет! Я Нейроныч 🧠\n\n"
     "Тренажёр мозга прямо в Telegram: память, внимание, логика и счёт — "
     "всего 5 минут в день.\n\n"
-    "Первые 3 дня бесплатно. Жми кнопку ниже, чтобы начать 👇"
+    "Первые 3 дня бесплатно. Жми кнопку ниже, чтобы начать 👇\n\n"
+    "Вечером я напомню, если серия дней под угрозой. Отключить: /reminders_off"
 )
 OTHER_TEXT = "Все тренировки — внутри приложения. Жми кнопку ниже 👇"
 
@@ -106,6 +114,20 @@ class PayPremiumRequest(BaseModel):
     user_id: int
 
 
+class UserOnly(BaseModel):
+    user_id: int
+
+
+class ChallengeResult(BaseModel):
+    user_id: int
+    correct: int = Field(ge=0, le=5)
+    time_ms: int = Field(ge=0, le=3_600_000)
+
+
+class DailySubmit(ChallengeResult):
+    day: str   # YYYY-MM-DD по Москве — день, чьи задания проходил игрок
+
+
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "Нейроныч API работает"}
@@ -120,8 +142,138 @@ async def ping():
 async def init_user(payload: UserInit):
     add_user_if_not_exists(payload.user_id, payload.username, payload.referrer_id)
     # Стрик — за ежедневный вход: каждое открытие приложения засчитывает сегодняшний день
-    update_streak(payload.user_id)
+    info = update_streak(payload.user_id) or {}
+    return {"ok": True, "freeze_used": info.get("freeze_used", 0)}
+
+
+@app.post("/api/user/write_access")
+async def user_write_access(payload: UserOnly):
+    # Пользователь разрешил боту писать ему (requestWriteAccess в Mini App) — можно слать напоминания
+    set_user_flag(payload.user_id, "bot_blocked", False)
     return {"ok": True}
+
+
+# ===== Испытание дня =====
+
+def _parse_day(day: str):
+    from datetime import date as _date
+    try:
+        d = _date.fromisoformat(day)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Bad day")
+    today = today_msk()
+    if not (today - timedelta(days=1) <= d <= today):
+        raise HTTPException(status_code=400, detail="Day is over")
+    return d
+
+
+@app.post("/api/daily/submit")
+async def daily_submit(payload: DailySubmit):
+    return submit_daily(payload.user_id, _parse_day(payload.day), payload.correct, payload.time_ms)
+
+
+@app.get("/api/daily/status/{user_id}")
+async def daily_status(user_id: int):
+    return get_daily_status(user_id, today_msk())
+
+
+# ===== Дуэли =====
+
+def _duel_public(d: dict) -> dict:
+    return {
+        "id": d["id"], "seed": d["seed"],
+        "creator_id": d["creator_id"], "creator_username": d.get("creator_username"),
+        "creator_correct": d.get("creator_correct"), "creator_time_ms": d.get("creator_time_ms"),
+        "opponent_id": d.get("opponent_id"), "opponent_username": d.get("opponent_username"),
+        "opponent_correct": d.get("opponent_correct"), "opponent_time_ms": d.get("opponent_time_ms"),
+    }
+
+
+def _duel_winner(d: dict):
+    """'creator', 'opponent' или 'draw'."""
+    a = (d["creator_correct"], -d["creator_time_ms"])
+    b = (d["opponent_correct"], -d["opponent_time_ms"])
+    return "creator" if a > b else "opponent" if b > a else "draw"
+
+
+@app.post("/api/duel/new")
+async def duel_new(payload: UserOnly):
+    return create_duel(payload.user_id)
+
+
+@app.get("/api/duel/{duel_id}")
+async def duel_get(duel_id: str):
+    d = get_duel(duel_id)
+    if not d:
+        raise HTTPException(status_code=404, detail="Duel not found")
+    out = _duel_public(d)
+    if d.get("opponent_correct") is not None:
+        out["winner"] = _duel_winner(d)
+    return out
+
+
+@app.post("/api/duel/{duel_id}/result")
+async def duel_result(duel_id: str, payload: ChallengeResult):
+    role = save_duel_result(duel_id, payload.user_id, payload.correct, payload.time_ms)
+    if role in ("not_found",):
+        raise HTTPException(status_code=404, detail="Duel not found")
+    d = get_duel(duel_id)
+    out = _duel_public(d)
+    out["role"] = role
+    if role == "opponent":
+        winner = _duel_winner(d)
+        out["winner"] = winner
+        await _notify_duel(d, winner)
+    elif d.get("opponent_correct") is not None:
+        out["winner"] = _duel_winner(d)
+    return out
+
+
+def _secs(ms) -> str:
+    return f"{(ms or 0) / 1000:.1f}".replace(".", ",")
+
+
+async def _notify_duel(d: dict, winner: str):
+    c_name = f"@{d['creator_username']}" if d.get("creator_username") else "Соперник"
+    o_name = f"@{d['opponent_username']}" if d.get("opponent_username") else "Соперник"
+    score = (f"{c_name}: {d['creator_correct']}/5 за {_secs(d['creator_time_ms'])} с\n"
+             f"{o_name}: {d['opponent_correct']}/5 за {_secs(d['opponent_time_ms'])} с")
+    kb = [[_app_button("")]]
+    for uid, me in ((d["creator_id"], "creator"), (d["opponent_id"], "opponent")):
+        head = "🤝 Ничья!" if winner == "draw" else ("🏆 Ты победил в дуэли!" if winner == me else "⚔️ В этот раз соперник оказался быстрее")
+        await _send_message(uid, f"{head}\n\n{score}\n\nСыграем ещё? Открой Нейроныч → «Дуэль».", kb)
+
+
+# ===== Напоминания (запускает cron-job.org раз в день вечером) =====
+
+def _reminder_text(row: dict) -> str:
+    streak = row.get("current_streak") or 0
+    if (today_msk() - row["last_active_date"]).days == 1 and streak >= 2:
+        extra = "\n❄️ Есть заморозка, но лучше её поберечь 😉" if row.get("streak_freezes") else ""
+        return f"🔥 Твоя серия — {streak} дн. подряд — сгорит в полночь!\nЗайди на пару минут, и она продолжится.{extra}"
+    if (today_msk() - row["last_active_date"]).days == 1:
+        return "🧠 Сегодня тебя ждёт новое испытание дня — 5 заданий. Проверь, сколько наберёшь!"
+    return "👋 Давно не виделись! Мозгу нужна тренировка — испытание дня уже ждёт тебя."
+
+
+@app.get("/api/cron/remind")
+async def cron_remind(key: str = ""):
+    if not CRON_SECRET or not hmac.compare_digest(key, CRON_SECRET):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    sent = failed = 0
+    footer = "\n\nОтключить напоминания: /reminders_off"
+    for row in get_reminder_targets():
+        ok = await _send_message(row["user_id"], _reminder_text(row) + footer, [[_app_button("")]])
+        if ok:
+            sent += 1
+            mark_reminded(row["user_id"])
+        else:
+            failed += 1
+            # Бот не может написать (не запускали бота или заблокировали) — больше не пытаемся
+            set_user_flag(row["user_id"], "bot_blocked", True)
+        await asyncio.sleep(0.05)
+    logger.info("Reminders: sent=%s failed=%s", sent, failed)
+    return {"sent": sent, "failed": failed}
 
 
 @app.get("/api/task")
@@ -237,6 +389,25 @@ async def referrals(user_id: int):
 
 # ===== Telegram Stars =====
 
+@app.post("/api/pay/stars/freeze")
+async def create_stars_freeze_invoice(payload: UserOnly):
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/createInvoiceLink",
+            json={
+                "title": "Заморозка стрика",
+                "description": "Спасает серию дней, если пропустишь день",
+                "payload": f"freeze:{payload.user_id}",
+                "currency": "XTR",
+                "prices": [{"label": "Заморозка", "amount": FREEZE_STARS}],
+            },
+        )
+    data = resp.json()
+    if not data.get("ok"):
+        raise HTTPException(status_code=400, detail=data.get("description", "Telegram error"))
+    return {"invoice_link": data["result"]}
+
+
 @app.post("/api/pay/stars/subscription")
 async def create_stars_subscription_invoice(payload: PaySubscribeRequest):
     async with httpx.AsyncClient() as client:
@@ -305,6 +476,8 @@ async def telegram_webhook(request: Request):
             activate_subscription(user_id, days=30)
         elif kind == "premium":
             grant_premium_topics(user_id)
+        elif kind == "freeze":
+            add_streak_freeze(user_id, 1)
         return {"ok": True}
 
     # Текстовые сообщения в личке: админ-команды, /myid, а на всё остальное (/start, "привет") —
@@ -319,8 +492,23 @@ async def telegram_webhook(request: Request):
                 refresh_username(sender["id"], sender["username"])
             except Exception:
                 logger.exception("refresh_username error")
+        if sender.get("id"):
+            try:
+                # Человек пишет боту — значит, бот снова может писать ему
+                set_user_flag(sender["id"], "bot_blocked", False)
+            except Exception:
+                logger.exception("bot_blocked reset error")
         if command == "/myid":
             await _send_message(chat["id"], f"Твой Telegram ID: {sender.get('id')}")
+        elif command in ("/reminders_off", "/reminders_on") and sender.get("id"):
+            off = command == "/reminders_off"
+            try:
+                set_user_flag(sender["id"], "reminders_off", off)
+                await _send_message(chat["id"], "🔕 Напоминания выключены. Включить обратно: /reminders_on" if off
+                                    else "🔔 Напоминания включены. Выключить: /reminders_off")
+            except Exception:
+                logger.exception("reminders toggle error")
+                await _send_message(chat["id"], "⚠️ Не получилось, попробуй ещё раз.")
         elif command in ADMIN_COMMANDS and sender.get("id") in ADMIN_IDS:
             await _handle_admin_command(chat["id"], command, text)
         else:

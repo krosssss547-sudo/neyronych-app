@@ -4,7 +4,7 @@
 
 import type { Cell, GameTask, Level } from './gametypes'
 import { XP_BY_LEVEL } from './gametypes'
-import { makeRecent, numberOptions, pickN, pickOne, rand, shuffle, uniqueOptions } from './gamekit'
+import { makeRecent, numberOptions, pickN, pickOne, rand, shuffle, uniqueOptions, isSeeded } from './gamekit'
 
 export const ATTENTION_KINDS: Record<string, string> = {
   odd: 'Найди лишнего',
@@ -312,7 +312,7 @@ const WEIGHTS: { kind: string; w: number }[] = [
 let lastKind = ''
 
 function pickKind(): string {
-  const options = WEIGHTS.filter((o) => o.kind !== lastKind)
+  const options = WEIGHTS.filter((o) => isSeeded() || o.kind !== lastKind)
   const sum = options.reduce((a, o) => a + o.w, 0)
   let r = Math.random() * sum
   for (const o of options) {

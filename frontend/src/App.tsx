@@ -6,7 +6,9 @@ import { generateReading, loadReadingProfile, saveReadingProfile, recordReadingR
 import type { ReadingProfile, ReadingTask } from './reading'
 import { ACHIEVEMENTS, ACHIEVEMENT_GROUPS, evaluateAchievements, loadMeta, saveMeta, loadSeenAchievements, saveSeenAchievements } from './achievements'
 import type { AchievementState, Meta } from './achievements'
-import { generateGame, isGameTopic } from './games'
+import { generateGame, isGameTopic, GAME_TOPICS } from './games'
+import { withSeed, hashString, pickN } from './gamekit'
+import NBackGame from './NBack'
 import type { GameTask, GameTopic, Stimulus } from './gametypes'
 import { syncFromCloud } from './cloudsync'
 import { loadGameProfiles, saveGameProfiles, recordGameResult, getGameRank, analyzeGame, kindTitle, comboBonusXp, POINTS_PER_LEVEL, FAST_BONUS_POINTS, FAST_BONUS_XP as GAME_FAST_XP, PERFECT_SERIES_POINTS as GAME_PERFECT_POINTS } from './gamestats'
@@ -23,7 +25,21 @@ declare global {
   }
 }
 
-type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard' | 'paywall' | 'premiumPurchase' | 'invite'
+type Screen = 'welcome' | 'warmup' | 'warmupResult' | 'topic' | 'difficulty' | 'task' | 'summary' | 'stats' | 'achievements' | 'leaderboard' | 'paywall' | 'premiumPurchase' | 'invite' | 'challengeIntro' | 'challengeResult'
+
+// ───────── Испытание дня, возраст мозга, дуэли ─────────
+// Серия из 5 заданий с фиксированным зерном: у всех, кто проходит одно испытание, задания одинаковые.
+type ChallengeKind = 'daily' | 'brainage' | 'duel'
+type PlanStep = { topic: GameTopic; seed: number }
+type Challenge = { kind: ChallengeKind; plan: PlanStep[]; day?: string; duelId?: string; duelRole?: 'creator' | 'opponent'; rival?: string | null }
+type DailyTop = { username: string | null; correct: number; time_ms: number }
+type DailyStatus = { day: string; played: boolean; participants: number; top: DailyTop[]; correct?: number; time_ms?: number; rank?: number; better_than_pct?: number; first_attempt?: boolean }
+type DuelInfo = {
+  id: string; seed: number; creator_id: number; creator_username: string | null; creator_correct: number | null; creator_time_ms: number | null
+  opponent_id: number | null; opponent_username: string | null; opponent_correct: number | null; opponent_time_ms: number | null
+  winner?: 'creator' | 'opponent' | 'draw'; role?: string
+}
+type ChallengeOutcome = { kind: ChallengeKind; correct: number; timeMs: number; daily?: DailyStatus; duel?: DuelInfo; error?: string; loading?: boolean }
 type Topic = 'memory' | 'attention' | 'logic' | 'math' | 'differences' | 'speed' | 'colors' | 'words' | 'matrices' | 'reading'
 type Difficulty = 1 | 2 | 3
 type Background = 'space' | 'black' | 'white' | 'aurora' | 'neural' | 'ocean' | 'sunset' | 'brain'
@@ -61,6 +77,7 @@ type UserStats = {
   total: number
   correct: number
   by_category: { category: string; total: number; correct: number }[]
+  streak_freezes?: number
 }
 type AccessStatus = {
   trial_active: boolean
@@ -93,6 +110,38 @@ const BACKGROUNDS: { id: Background; icon: string; name: { ru: string; en: strin
   { id: 'brain', icon: '🧠', name: { ru: 'Нейроныч', en: 'Neuronych' }, swatch: 'radial-gradient(circle at 50% 45%, #35d9ff 0%, #7a3cff 48%, #05030f 80%)' },
 ]
 const SERIES_LENGTH = 5
+const CHALLENGE_LEVEL = 2 as const
+const BRAIN_AGE_TOPICS: GameTopic[] = ['math', 'attention', 'memory', 'logic', 'speed']
+const BOT_APP_LINK = 'https://t.me/neyronych18_bot/app'
+const WRITE_ACCESS_KEY = 'neyronych_write_access_asked'
+
+// Сегодняшняя дата по Москве в виде YYYY-MM-DD (как на сервере)
+function mskToday(): string {
+  return new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
+// План испытания: темы (из зерна или заданные) и зерно для каждого задания
+function makePlan(seed: number, topics?: GameTopic[]): PlanStep[] {
+  const list = topics ?? withSeed(seed, () => pickN(GAME_TOPICS, SERIES_LENGTH))
+  return list.map((topic, i) => ({ topic, seed: hashString(`${seed}:${i}:${topic}`) }))
+}
+
+// «Возраст мозга» по точности и скорости: 5/5 быстро ≈ 18–22 года
+function brainAge(correct: number, timeMs: number): number {
+  const avgSec = timeMs / 1000 / SERIES_LENGTH
+  const age = 18 + (SERIES_LENGTH - correct) * 7 + Math.min(20, Math.max(0, (avgSec - 5) * 1.5))
+  return Math.round(Math.min(80, Math.max(18, age)))
+}
+
+function brainAgeVerdict(age: number): string {
+  if (age <= 23) return 'Мозг работает как у отличника-первокурсника 🚀'
+  if (age <= 30) return 'Отличная форма: быстро и точно 💪'
+  if (age <= 40) return 'Хорошо! Пара недель тренировок — и будет ещё моложе'
+  if (age <= 55) return 'Есть куда расти — ежедневные 5 минут творят чудеса'
+  return 'Мозгу нужна зарядка. Начни с испытания дня!'
+}
+
+const secText = (ms: number) => (ms / 1000).toFixed(1).replace('.', ',')
 const DIFF_TIME: Record<Difficulty, number> = { 1: 60, 2: 75, 3: 90 }
 
 const API_URL = 'https://neyronych-app.onrender.com'
@@ -690,6 +739,12 @@ function formatTrialTime(totalSeconds: number): string {
 
 function AppInner() {
   const [screen, setScreen] = useState<Screen>('welcome')
+  const [challenge, setChallenge] = useState<Challenge | null>(null)
+  const [pendingChallenge, setPendingChallenge] = useState<Challenge | null>(null)
+  const [outcome, setOutcome] = useState<ChallengeOutcome | null>(null)
+  const [dailyStatus, setDailyStatus] = useState<DailyStatus | null>(null)
+  const [challengeLoading, setChallengeLoading] = useState(false)
+  const pendingStartRef = useRef<string | null>(null)
   const [prevScreen, setPrevScreen] = useState<Screen>('topic')
   const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null)
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty | null>(null)
@@ -787,6 +842,9 @@ function AppInner() {
 
     const startParam: string | undefined = tg?.initDataUnsafe?.start_param
     let referrerId: number | null = null
+    if (startParam && (startParam === 'daily' || startParam === 'brainage' || /^duel_[A-Za-z0-9]+$/.test(startParam))) {
+      pendingStartRef.current = startParam
+    }
     if (startParam && startParam.startsWith('ref_')) {
       const parsed = parseInt(startParam.slice(4), 10)
       if (!isNaN(parsed)) referrerId = parsed
@@ -798,7 +856,14 @@ function AppInner() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: uid, username: uname, referrer_id: referrerId }),
       })
-        .then(() => fetch(`${API_URL}/api/access/${uid}`))
+        .then((res) => res.json().catch(() => ({})))
+        .then((initData: { freeze_used?: number }) => {
+          const used = initData?.freeze_used ?? 0
+          if (!cancelled && used > 0) {
+            setTimeout(() => showMessage(`❄️ Заморозка спасла твою серию! Потрачено заморозок: ${used}. Серия продолжается 🔥`), 800)
+          }
+          return fetch(`${API_URL}/api/access/${uid}`)
+        })
         .then((res) => { if (!res.ok) throw new Error('bad'); return res.json() })
         .then((data: unknown) => {
           if (cancelled) return
@@ -878,8 +943,9 @@ function AppInner() {
       if (tg?.openInvoice) {
         tg.openInvoice(url, (status: string) => {
           if (status === 'paid') {
-            setScreen('topic')
+            setScreen(screen === 'stats' ? 'stats' : 'topic')
             if (userId !== null) {
+              setTimeout(() => fetchTopBarStats(userId), 2500)
               setTimeout(() => refreshAccess(userId), 2000)
               setTimeout(() => refreshAccess(userId), 6000)
             }
@@ -949,7 +1015,7 @@ function AppInner() {
     setCombo(0)
   }
 
-  const loadTask = (topic: Topic, difficulty: Difficulty) => {
+  const loadTask = (topic: Topic, difficulty: Difficulty, seed?: number) => {
     taskStartRef.current = Date.now()
     setSelectedAnswer(null)
     setAnswerResult(null)
@@ -987,7 +1053,9 @@ function AppInner() {
     }
 
     // Остальные темы — мини-игры, считаются прямо на телефоне, без обращения к серверу
-    const g = generateGame(topic as GameTopic, difficulty)
+    const g = seed !== undefined
+      ? withSeed(seed, () => generateGame(topic as GameTopic, difficulty))
+      : generateGame(topic as GameTopic, difficulty)
     setGame(g)
     setGameKey((k) => k + 1)
     setSchulteNext(1)
@@ -1058,6 +1126,11 @@ function AppInner() {
 
   const leaveTask = () => {
     setTimeLeft(null)
+    if (challenge) {
+      setChallenge(null)
+      setScreen('topic')
+      return
+    }
     setScreen('difficulty')
   }
 
@@ -1159,7 +1232,7 @@ function AppInner() {
     }
   }
 
-  const finishGame = (isCorrect: boolean, elapsedMs: number) => {
+  const finishGame = (isCorrect: boolean, elapsedMs: number, detail?: string) => {
     if (!game || !selectedTopic) return
     const fast = isCorrect && elapsedMs <= game.fastSeconds * 1000
     const newCombo = isCorrect ? comboRef.current + 1 : 0
@@ -1183,7 +1256,7 @@ function AppInner() {
       return next
     })
 
-    setAnswerResult({ is_correct: isCorrect, correct_answer: game.correct, explanation: game.explanation + note, xp_earned: xp })
+    setAnswerResult({ is_correct: isCorrect, correct_answer: game.correct, explanation: (detail ? detail + '\n' : '') + game.explanation + note, xp_earned: xp })
     haptic(isCorrect ? 'success' : 'error')
     if (isCorrect) sfx.correct(newCombo); else sfx.wrong()
     setSeriesLog((prev) => [...prev, { ok: isCorrect, ms: elapsedMs, kind: game.kind }])
@@ -1270,6 +1343,14 @@ function AppInner() {
   }, [screen, game, gPhase, gameKey])
 
   const handleNext = () => {
+    if (challenge) {
+      const idx = seriesLog.length
+      if (idx >= challenge.plan.length) { finishChallenge(); return }
+      const stepPlan = challenge.plan[idx]
+      setSelectedTopic(stepPlan.topic)
+      loadTask(stepPlan.topic, CHALLENGE_LEVEL, stepPlan.seed)
+      return
+    }
     if (!selectedTopic || !selectedDifficulty) return
     if (seriesLog.length >= SERIES_LENGTH) {
       if (seriesLog.every((e) => e.ok)) {
@@ -1291,8 +1372,159 @@ function AppInner() {
         saveMeta(nextMeta)
       }
       setScreen('summary')
+      maybeRequestWriteAccess()
     } else loadTask(selectedTopic, selectedDifficulty)
   }
+
+  // ───────── Испытания: испытание дня, возраст мозга, дуэль ─────────
+
+  const startChallenge = (ch: Challenge) => {
+    setChallenge(ch)
+    setOutcome(null)
+    setSeriesLog([])
+    comboRef.current = 0
+    setCombo(0)
+    const first = ch.plan[0]
+    setSelectedTopic(first.topic)
+    setSelectedDifficulty(CHALLENGE_LEVEL)
+    loadTask(first.topic, CHALLENGE_LEVEL, first.seed)
+  }
+
+  const postJson = (path: string, body: unknown) =>
+    fetch(`${API_URL}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+
+  const finishChallenge = () => {
+    if (!challenge) return
+    const ch = challenge
+    const correct = seriesLog.filter((e) => e.ok).length
+    const timeMs = Math.round(seriesLog.reduce((a, e) => a + (e.ms || 0), 0))
+    setChallenge(null)
+    setOutcome({ kind: ch.kind, correct, timeMs, loading: ch.kind !== 'brainage' })
+    setScreen('challengeResult')
+    maybeRequestWriteAccess()
+    if (userId === null) { setOutcome((o) => o && { ...o, loading: false }); return }
+    if (ch.kind === 'daily') {
+      postJson('/api/daily/submit', { user_id: userId, day: ch.day, correct, time_ms: timeMs })
+        .then(({ ok, data }) => {
+          if (!ok) throw new Error(data?.detail || 'error')
+          setDailyStatus(data)
+          setOutcome((o) => o && { ...o, loading: false, daily: data })
+        })
+        .catch(() => setOutcome((o) => o && { ...o, loading: false, error: 'Не удалось сохранить результат. Он засчитается, если пройти испытание ещё раз сегодня.' }))
+    } else if (ch.kind === 'duel' && ch.duelId) {
+      postJson(`/api/duel/${ch.duelId}/result`, { user_id: userId, correct, time_ms: timeMs })
+        .then(({ ok, data }) => {
+          if (!ok) throw new Error('error')
+          setOutcome((o) => o && { ...o, loading: false, duel: data })
+        })
+        .catch(() => setOutcome((o) => o && { ...o, loading: false, error: 'Не удалось сохранить результат дуэли. Проверь интернет и попробуй ещё раз.' }))
+    }
+  }
+
+  const openDaily = () => {
+    const day = mskToday()
+    if (dailyStatus && dailyStatus.day === day && dailyStatus.played) {
+      setOutcome({ kind: 'daily', correct: dailyStatus.correct ?? 0, timeMs: dailyStatus.time_ms ?? 0, daily: dailyStatus })
+      setScreen('challengeResult')
+      return
+    }
+    setPendingChallenge({ kind: 'daily', day, plan: makePlan(hashString('daily:' + day)) })
+    setScreen('challengeIntro')
+  }
+
+  const openBrainAge = () => {
+    const seed = (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0
+    setPendingChallenge({ kind: 'brainage', plan: makePlan(seed, BRAIN_AGE_TOPICS) })
+    setScreen('challengeIntro')
+  }
+
+  const createDuel = () => {
+    if (userId === null || challengeLoading) return
+    setChallengeLoading(true)
+    postJson('/api/duel/new', { user_id: userId })
+      .then(({ ok, data }) => {
+        setChallengeLoading(false)
+        if (!ok || !data?.id) throw new Error('error')
+        setPendingChallenge({ kind: 'duel', duelId: data.id, duelRole: 'creator', plan: makePlan(Number(data.seed)) })
+        setScreen('challengeIntro')
+      })
+      .catch(() => { setChallengeLoading(false); showMessage('Не удалось создать дуэль. Попробуй ещё раз через минуту.') })
+  }
+
+  const openDuelFromLink = (duelId: string) => {
+    fetch(`${API_URL}/api/duel/${duelId}`)
+      .then((res) => { if (!res.ok) throw new Error('nf'); return res.json() })
+      .then((d: DuelInfo) => {
+        const rival = d.creator_username ? '@' + d.creator_username : 'Друг'
+        if (d.creator_id === userId) {
+          setOutcome({ kind: 'duel', correct: d.creator_correct ?? 0, timeMs: d.creator_time_ms ?? 0, duel: { ...d, role: 'creator' } })
+          setScreen('challengeResult')
+        } else if (d.opponent_id !== null) {
+          const mine = d.opponent_id === userId
+          setOutcome({ kind: 'duel', correct: mine ? d.opponent_correct ?? 0 : 0, timeMs: mine ? d.opponent_time_ms ?? 0 : 0, duel: { ...d, role: mine ? 'opponent' : 'taken' } })
+          setScreen('challengeResult')
+        } else if (d.creator_correct === null) {
+          showMessage(`${rival} ещё не закончил свою попытку. Открой ссылку чуть позже.`)
+          setScreen('topic')
+        } else {
+          setPendingChallenge({ kind: 'duel', duelId: d.id, duelRole: 'opponent', rival, plan: makePlan(Number(d.seed)) })
+          setScreen('challengeIntro')
+        }
+      })
+      .catch(() => { showMessage('Дуэль не найдена. Попроси друга прислать ссылку ещё раз.'); setScreen('topic') })
+  }
+
+  // Переход по ссылке ?startapp=daily / brainage / duel_<id>
+  const runPendingStart = (): boolean => {
+    const p = pendingStartRef.current
+    if (!p) return false
+    pendingStartRef.current = null
+    if (p === 'daily') openDaily()
+    else if (p === 'brainage') openBrainAge()
+    else if (p.startsWith('duel_')) openDuelFromLink(p.slice(5))
+    else return false
+    return true
+  }
+
+  const shareLink = (text: string, startParam: string) => {
+    const url = `${BOT_APP_LINK}?startapp=${startParam}`
+    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(text)}`
+    const tg = window.Telegram?.WebApp
+    if (tg?.openTelegramLink) tg.openTelegramLink(shareUrl)
+    else window.open(shareUrl, '_blank')
+  }
+
+  // Разрешение боту писать пользователю — чтобы работали напоминания (спрашиваем один раз)
+  const maybeRequestWriteAccess = () => {
+    const tg = window.Telegram?.WebApp
+    if (!tg?.requestWriteAccess || (tg.isVersionAtLeast && !tg.isVersionAtLeast('6.9')) || lsGet(WRITE_ACCESS_KEY)) return
+    lsSet(WRITE_ACCESS_KEY, '1')
+    const uid = userId
+    setTimeout(() => {
+      try {
+        tg.requestWriteAccess((granted: boolean) => {
+          if (granted && uid !== null) void postJson('/api/user/write_access', { user_id: uid }).catch(() => {})
+        })
+      } catch { /* старые версии Telegram */ }
+    }, 1200)
+  }
+
+  const buyFreeze = () => {
+    if (userId === null || payLoading) return
+    setPayLoading(true)
+    postJson('/api/pay/stars/freeze', { user_id: userId })
+      .then(({ data }) => { setPayLoading(false); openPayLink(data?.invoice_link) })
+      .catch(() => { setPayLoading(false); openPayLink(undefined) })
+  }
+
+  useEffect(() => {
+    if (screen !== 'topic' || userId === null) return
+    fetch(`${API_URL}/api/daily/status/${userId}`)
+      .then((res) => res.json())
+      .then((d: DailyStatus) => { if (d && typeof d.played === 'boolean') setDailyStatus(d) })
+      .catch(() => {})
+  }, [screen, userId])
 
   const continueAfterSummary = () => {
     if (!selectedTopic || !selectedDifficulty) return
@@ -1580,6 +1812,7 @@ function AppInner() {
     const step = Math.min(SERIES_LENGTH, answerResult ? seriesLog.length : seriesLog.length + 1)
     const header = (
       <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', margin: '3rem 0 1.25rem', position: 'relative', zIndex: 1 }}>
+        {challenge && <span style={{ ...s.pill, color: GOLD, borderColor: GOLD }}>{challenge.kind === 'daily' ? '🏆 Испытание дня' : challenge.kind === 'brainage' ? '🧠 Возраст мозга' : '⚔️ Дуэль'}</span>}
         <span style={s.pill}>{game.kindLabel}</span>
         <span style={s.pill}>{DIFFICULTY_EMOJI[game.level]} {step}/{SERIES_LENGTH}</span>
         {combo >= 3 && <span style={{ ...s.pill, color: GOLD, borderColor: GOLD }}>🔥 ×{combo}</span>}
@@ -1622,6 +1855,28 @@ function AppInner() {
           <p style={{ fontSize: '0.78rem', color: c.textSecondary, position: 'relative', zIndex: 1 }}>
             {gPhase === 'watch' ? (lang === 'ru' ? '👀 Смотри...' : '👀 Watch...') : `${corsiInput.length}/${seq.length}`}
           </p>
+          {resultBlock}
+        </>
+      )
+    }
+
+    if (game.layout === 'nback' && game.nback) {
+      const nb = game.nback
+      return (
+        <>
+          {header}
+          <p key={gameKey} style={{ ...s.question, marginTop: 0, marginBottom: '1rem' }}>{game.question}</p>
+          <NBackGame
+            n={nb.n} size={nb.size} sequence={nb.sequence} stepMs={nb.stepMs}
+            colors={{ cardBg: c.cardBg, cardBorder: c.cardBorder, text: c.text, textSecondary: c.textSecondary }}
+            accent={NEON} good={GREEN} bad={RED}
+            onTick={(i) => { if (i === 0) taskStartRef.current = Date.now(); sfx.step(i % 6) }}
+            onFinish={(ok, detail) => {
+              if (answeredRef.current) return
+              answeredRef.current = true
+              finishGame(ok, Date.now() - taskStartRef.current, detail)
+            }}
+          />
           {resultBlock}
         </>
       )
@@ -1893,7 +2148,7 @@ function AppInner() {
           <div style={{ marginBottom: '1rem' }}><Brain size={140} /></div>
           <h1 style={s.welcomeTitle}>{t.welcomeTitle}</h1>
           <p style={s.welcomeSubtitle}>{t.welcomeSubtitle}</p>
-          <button style={s.nextButton} onClick={() => { setWarmupStep(0); setWarmupCorrect(0); setWarmupAnswered(null); setScreen('warmup') }}>{t.start}</button>
+          <button style={s.nextButton} onClick={() => { if (runPendingStart()) return; setWarmupStep(0); setWarmupCorrect(0); setWarmupAnswered(null); setScreen('warmup') }}>{t.start}</button>
         </div>
       )}
 
@@ -1943,6 +2198,25 @@ function AppInner() {
               ? <p style={{ color: GREEN, fontSize: '0.85rem', marginBottom: '1rem', position: 'relative', zIndex: 1 }}>{t.subscribed}</p>
               : <p style={{ color: access.trial_seconds_left <= 3600 ? RED : c.textSecondary, fontSize: '0.85rem', marginBottom: '1rem', position: 'relative', zIndex: 1 }}>⏳ {t.trialLabel}: {formatTrialTime(access.trial_seconds_left)}</p>
           )}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', maxWidth: '420px', margin: '0 auto 1.25rem', position: 'relative', zIndex: 1 }}>
+            <button style={{ ...s.card, padding: '0.8rem 0.3rem', border: `0.5px solid ${GOLD}` }} onClick={openDaily}>
+              <div style={{ fontSize: '1.5rem' }}>🏆</div>
+              <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>{lang === 'ru' ? 'Испытание дня' : 'Daily challenge'}</div>
+              <div style={{ fontSize: '0.66rem', color: dailyStatus?.played ? GREEN : c.textSecondary, marginTop: '0.15rem' }}>
+                {dailyStatus?.played ? `✅ ${dailyStatus.correct}/5 · #${dailyStatus.rank}` : (lang === 'ru' ? 'одно на всех' : 'same for all')}
+              </div>
+            </button>
+            <button style={{ ...s.card, padding: '0.8rem 0.3rem' }} onClick={openBrainAge}>
+              <div style={{ fontSize: '1.5rem' }}>🧠</div>
+              <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>{lang === 'ru' ? 'Возраст мозга' : 'Brain age'}</div>
+              <div style={{ fontSize: '0.66rem', color: c.textSecondary, marginTop: '0.15rem' }}>{lang === 'ru' ? 'тест на 2 минуты' : '2-minute test'}</div>
+            </button>
+            <button style={{ ...s.card, padding: '0.8rem 0.3rem' }} onClick={createDuel} disabled={challengeLoading}>
+              <div style={{ fontSize: '1.5rem' }}>⚔️</div>
+              <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>{lang === 'ru' ? 'Дуэль' : 'Duel'}</div>
+              <div style={{ fontSize: '0.66rem', color: c.textSecondary, marginTop: '0.15rem' }}>{challengeLoading ? '…' : (lang === 'ru' ? 'вызови друга' : 'challenge a friend')}</div>
+            </button>
+          </div>
           <p style={s.subtitle}>{t.chooseTopic}</p>
           <div style={s.gridTopics}>
             {TOPIC_KEYS.map((key) => {
@@ -2126,6 +2400,112 @@ function AppInner() {
         </div>
       )}
 
+      {screen === 'challengeIntro' && pendingChallenge && (
+        <div className="screen-anim" style={s.welcomeWrap}>
+          <div style={s.welcomeEmoji}>{pendingChallenge.kind === 'daily' ? '🏆' : pendingChallenge.kind === 'brainage' ? '🧠' : '⚔️'}</div>
+          <h1 style={s.welcomeTitle}>
+            {pendingChallenge.kind === 'daily' ? 'Испытание дня' : pendingChallenge.kind === 'brainage' ? 'Сколько лет твоему мозгу?' : pendingChallenge.duelRole === 'opponent' ? `${pendingChallenge.rival} вызывает тебя на дуэль!` : 'Дуэль с другом'}
+          </h1>
+          <p style={s.welcomeSubtitle}>
+            {pendingChallenge.kind === 'daily'
+              ? '5 заданий из разных тем — сегодня они одинаковые у всех игроков. В рейтинг дня идёт первая попытка: считаются правильные ответы, при равенстве — время.'
+              : pendingChallenge.kind === 'brainage'
+                ? '5 заданий на счёт, внимание, память, логику и скорость. Отвечай быстро, но без ошибок — по точности и скорости посчитаем возраст мозга.'
+                : pendingChallenge.duelRole === 'opponent'
+                  ? 'Пройди те же 5 заданий. Побеждает тот, кто решит больше, а при равенстве — кто быстрее. Результат соперника откроется в конце.'
+                  : 'Пройди 5 заданий, а потом отправь вызов другу — он решит те же задания. Бот сообщит вам обоим, кто победил.'}
+          </p>
+          <p style={{ fontSize: '0.8rem', color: c.textSecondary, margin: '0 0 1.5rem' }}>⏱ Время идёт с момента появления каждого задания</p>
+          <button style={s.nextButton} onClick={() => { const ch = pendingChallenge; setPendingChallenge(null); startChallenge(ch) }}>{t.start}</button>
+          <button style={s.backButtonStatic} onClick={() => { setPendingChallenge(null); setScreen('topic') }}>{t.back}</button>
+        </div>
+      )}
+
+      {screen === 'challengeResult' && outcome && (
+        <div className="screen-anim" style={s.welcomeWrap}>
+          {outcome.kind === 'brainage' && (() => {
+            const age = brainAge(outcome.correct, outcome.timeMs)
+            return (
+              <>
+                <div style={s.welcomeEmoji}>🧠</div>
+                <p style={{ ...s.welcomeSubtitle, margin: '0 0 0.25rem' }}>Возраст твоего мозга</p>
+                <h1 style={{ ...s.welcomeTitle, fontSize: '3.2rem', margin: '0 0 0.5rem', color: GOLD }}>{age}</h1>
+                <p style={{ ...s.welcomeSubtitle, marginBottom: '0.5rem' }}>{brainAgeVerdict(age)}</p>
+                <p style={{ fontSize: '0.8rem', color: c.textSecondary, margin: '0 0 1.5rem' }}>{outcome.correct}/5 верно · {secText(outcome.timeMs)} с</p>
+                <button style={s.nextButton} onClick={() => shareLink(`🧠 По тесту Нейроныча моему мозгу ${age} лет. А сколько твоему? Проверь за 2 минуты 👇`, 'brainage')}>📤 Поделиться результатом</button>
+                <button style={{ ...s.nextButton, marginTop: '0.75rem', background: 'transparent', border: `0.5px solid ${c.cardBorder}`, color: c.text }} onClick={openBrainAge}>🔁 Пройти ещё раз</button>
+              </>
+            )
+          })()}
+
+          {outcome.kind === 'daily' && (
+            <>
+              <div style={s.welcomeEmoji}>🏆</div>
+              <h1 style={s.welcomeTitle}>{outcome.correct}/5 · {secText(outcome.timeMs)} с</h1>
+              {outcome.loading && <p style={s.welcomeSubtitle}>Считаем твоё место…</p>}
+              {outcome.error && <p style={{ ...s.welcomeSubtitle, color: RED }}>{outcome.error}</p>}
+              {outcome.daily && outcome.daily.played && (
+                <>
+                  <p style={{ ...s.welcomeSubtitle, fontSize: '1.1rem', color: c.text, marginBottom: '0.3rem' }}>
+                    {outcome.daily.participants <= 1 ? 'Ты первый, кто прошёл испытание сегодня!' : `Ты лучше ${outcome.daily.better_than_pct}% игроков`}
+                  </p>
+                  <p style={{ fontSize: '0.85rem', color: c.textSecondary, margin: '0 0 0.5rem' }}>Место #{outcome.daily.rank} из {outcome.daily.participants}</p>
+                  {outcome.daily.first_attempt === false && <p style={{ fontSize: '0.78rem', color: c.textSecondary, margin: '0 0 0.5rem' }}>В рейтинг дня идёт первая попытка: {outcome.daily.correct}/5 · {secText(outcome.daily.time_ms ?? 0)} с</p>}
+                  {outcome.daily.top.length > 0 && (
+                    <div style={{ ...s.categoryList, width: '100%', maxWidth: '340px', margin: '0.75rem auto 1.25rem' }}>
+                      {outcome.daily.top.map((row, i) => (
+                        <div key={i} style={s.categoryRow}><span>{['🥇', '🥈', '🥉', '4.', '5.'][i]} {row.username ? '@' + row.username : 'Игрок'}</span><span style={{ color: c.textSecondary }}>{row.correct}/5 · {secText(row.time_ms)} с</span></div>
+                      ))}
+                    </div>
+                  )}
+                  <button style={s.nextButton} onClick={() => shareLink(`🏆 Испытание дня в Нейроныче: ${outcome.daily?.correct}/5 за ${secText(outcome.daily?.time_ms ?? 0)} с — лучше ${outcome.daily?.better_than_pct}% игроков. Сможешь обогнать?`, 'daily')}>📤 Бросить вызов друзьям</button>
+                  <p style={{ fontSize: '0.78rem', color: c.textSecondary, margin: '0.75rem 0 0' }}>Новое испытание — завтра в 00:00 по Москве</p>
+                </>
+              )}
+            </>
+          )}
+
+          {outcome.kind === 'duel' && (
+            <>
+              <div style={s.welcomeEmoji}>⚔️</div>
+              {outcome.loading && <><h1 style={s.welcomeTitle}>{outcome.correct}/5 · {secText(outcome.timeMs)} с</h1><p style={s.welcomeSubtitle}>Сохраняем результат…</p></>}
+              {outcome.error && <p style={{ ...s.welcomeSubtitle, color: RED }}>{outcome.error}</p>}
+              {outcome.duel && (() => {
+                const d = outcome.duel
+                const cName = d.creator_username ? '@' + d.creator_username : 'Соперник'
+                const oName = d.opponent_username ? '@' + d.opponent_username : 'Соперник'
+                if (d.role === 'creator' && d.opponent_id === null) {
+                  return (
+                    <>
+                      <h1 style={s.welcomeTitle}>{d.creator_correct}/5 · {secText(d.creator_time_ms ?? 0)} с</h1>
+                      <p style={s.welcomeSubtitle}>Твой результат сохранён. Теперь отправь вызов другу — он пройдёт те же 5 заданий, а бот сообщит вам обоим, кто победил.</p>
+                      <button style={s.nextButton} onClick={() => shareLink(`⚔️ Вызываю тебя на дуэль в Нейроныче! Я решил ${d.creator_correct}/5 за ${secText(d.creator_time_ms ?? 0)} с. Слабо обогнать?`, `duel_${d.id}`)}>📤 Отправить вызов</button>
+                    </>
+                  )
+                }
+                if (d.role === 'taken') return <p style={s.welcomeSubtitle}>В этой дуэли уже есть соперник. Попроси друга создать новую — или создай свою!</p>
+                if (d.role === 'not_ready') return <p style={s.welcomeSubtitle}>Создатель дуэли ещё не закончил попытку. Открой ссылку чуть позже.</p>
+                if (d.role === 'own') return <p style={s.welcomeSubtitle}>Это твоя дуэль — в ней засчитывается только первая попытка. Отправь ссылку другу!</p>
+                const iAmCreator = d.creator_id === userId
+                const won = d.winner === (iAmCreator ? 'creator' : 'opponent')
+                return (
+                  <>
+                    <h1 style={s.welcomeTitle}>{d.winner === 'draw' ? '🤝 Ничья!' : won ? '🏆 Победа!' : 'Соперник оказался сильнее'}</h1>
+                    <div style={{ ...s.categoryList, width: '100%', maxWidth: '340px', margin: '0.5rem auto 1.25rem' }}>
+                      <div style={s.categoryRow}><span>{d.winner === 'creator' ? '👑 ' : ''}{cName}</span><span style={{ color: c.textSecondary }}>{d.creator_correct}/5 · {secText(d.creator_time_ms ?? 0)} с</span></div>
+                      <div style={s.categoryRow}><span>{d.winner === 'opponent' ? '👑 ' : ''}{oName}</span><span style={{ color: c.textSecondary }}>{d.opponent_correct}/5 · {secText(d.opponent_time_ms ?? 0)} с</span></div>
+                    </div>
+                    <button style={s.nextButton} onClick={createDuel} disabled={challengeLoading}>⚔️ {won ? 'Новая дуэль' : 'Реванш'}</button>
+                  </>
+                )
+              })()}
+            </>
+          )}
+
+          <button style={s.backButtonStatic} onClick={() => { setOutcome(null); setScreen('topic') }}>{lang === 'ru' ? 'К темам' : 'To topics'}</button>
+        </div>
+      )}
+
       {screen === 'summary' && selectedTopic && (
         <div className="screen-anim" style={s.welcomeWrap}>
           <div style={s.welcomeEmoji}>{seriesLog.filter((e) => e.ok).length === SERIES_LENGTH ? '🔥' : '💪'}</div>
@@ -2159,6 +2539,17 @@ function AppInner() {
               <div style={s.streakRow}>
                 <div style={s.streakCard}><div style={s.streakValue}>🔥 {userStats.current_streak}</div><div style={s.streakLabel}>{t.currentStreak}</div></div>
                 <div style={s.streakCard}><div style={s.streakValue}>🏆 {userStats.longest_streak}</div><div style={s.streakLabel}>{t.bestStreak}</div></div>
+              </div>
+              <div style={{ ...s.streakCard, marginBottom: '1.25rem', padding: '0.9rem 1rem', textAlign: 'left' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>❄️ {lang === 'ru' ? 'Заморозки стрика' : 'Streak freezes'}: {userStats.streak_freezes ?? 0}</div>
+                    <div style={{ fontSize: '0.72rem', color: c.textSecondary, marginTop: '0.2rem' }}>
+                      {lang === 'ru' ? 'Спасают серию, если пропустишь день. С подпиской — 1 бесплатно каждую неделю.' : 'Save your streak if you miss a day. Subscribers get 1 free every week.'}
+                    </div>
+                  </div>
+                  <button style={{ ...s.linkBtn, whiteSpace: 'nowrap' }} disabled={payLoading} onClick={buyFreeze}>+1 · 15 ⭐</button>
+                </div>
               </div>
               <p style={s.subtitle}>{t.total}: {userStats.correct} / {userStats.total} · {t.xpTotal}: {userStats.total_xp}</p>
               <div style={s.categoryList}>

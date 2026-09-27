@@ -4,7 +4,7 @@
 
 import type { Cell, GameTask, Level } from './gametypes'
 import { XP_BY_LEVEL } from './gametypes'
-import { makeRecent, pickN, pickOne, rand, shuffle, uniqueOptions } from './gamekit'
+import { makeRecent, pickN, pickOne, rand, shuffle, uniqueOptions, isSeeded } from './gamekit'
 
 export const MEMORY_KINDS: Record<string, string> = {
   words: 'Список слов',
@@ -13,6 +13,7 @@ export const MEMORY_KINDS: Record<string, string> = {
   gridrecall: 'Картинки в клетках',
   order: 'Порядок',
   corsi: 'Повтори порядок',
+  nback: 'N-назад',
 }
 
 // ───────── Банки ─────────
@@ -349,6 +350,46 @@ function genCorsi(level: Level): GameTask {
   }
 }
 
+// ───────── 7. N-назад (тренажёр рабочей памяти) ─────────
+
+function genNBack(level: Level): GameTask {
+  const n = level === 1 ? 1 : 2
+  const size = 3
+  const steps = level === 1 ? 12 : level === 2 ? 14 : 16
+  const stepMs = level === 3 ? 1500 : 1900
+  let sequence: number[] = []
+  // Примерно 30% шагов — совпадения, остальные — гарантированно другая клетка.
+  // Пересобираем, пока совпадений не станет хотя бы 3, чтобы было что ловить.
+  for (let attempt = 0; attempt < 30; attempt++) {
+    sequence = []
+    for (let i = 0; i < steps; i++) {
+      if (i >= n && Math.random() < 0.3) {
+        sequence.push(sequence[i - n])
+      } else {
+        let v = rand(0, size * size - 1)
+        let guard = 0
+        while (i >= n && v === sequence[i - n] && guard++ < 20) v = rand(0, size * size - 1)
+        sequence.push(v)
+      }
+    }
+    const targets = sequence.filter((v, i) => i >= n && v === sequence[i - n]).length
+    if (targets >= 3) break
+  }
+  const back = n === 1 ? 'на предыдущем шаге' : `${n} шага назад`
+  return {
+    ...base(level, 'nback'),
+    xp: XP_BY_LEVEL[level] + 5,
+    layout: 'nback',
+    intro: `Клетки будут загораться по одной`,
+    question: `Жми «Совпало!», если клетка та же, что была ${back}`,
+    options: [],
+    correct: 'ok',
+    explanation: 'N-назад — классический тренажёр рабочей памяти: держишь в голове последние шаги и постоянно обновляешь их.',
+    fastSeconds: 0,
+    nback: { n, size, sequence, stepMs },
+  }
+}
+
 // ───────── Выбор вида ─────────
 
 const WEIGHTS: { kind: string; w: number }[] = [
@@ -358,12 +399,13 @@ const WEIGHTS: { kind: string; w: number }[] = [
   { kind: 'gridrecall', w: 16 },
   { kind: 'order', w: 14 },
   { kind: 'corsi', w: 16 },
+  { kind: 'nback', w: 14 },
 ]
 
 let lastKind = ''
 
 function pickKind(): string {
-  const options = WEIGHTS.filter((o) => o.kind !== lastKind)
+  const options = WEIGHTS.filter((o) => isSeeded() || o.kind !== lastKind)
   const sum = options.reduce((a, o) => a + o.w, 0)
   let r = Math.random() * sum
   for (const o of options) {
@@ -382,6 +424,7 @@ export function generateMemory(level: Level): GameTask {
     case 'pairs': return genPairs(level)
     case 'gridrecall': return genGridRecall(level)
     case 'order': return genOrder(level)
+    case 'nback': return genNBack(level)
     default: return genCorsi(level)
   }
 }

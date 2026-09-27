@@ -2,7 +2,7 @@
 // Семь видов: умножение, сложение/вычитание, деление, квадраты, «Верно?», кратные, «Что больше?».
 // Числа считаются на лету, поэтому каждое задание новое; недавние примеры не повторяются.
 
-import { rand, pickOne, shuffle, numberOptions, fmt, makeRecent } from './gamekit'
+import { rand, pickOne, shuffle, numberOptions, fmt, makeRecent, isSeeded } from './gamekit'
 import { XP_BY_LEVEL } from './gametypes'
 import type { GameTask, Level } from './gametypes'
 
@@ -368,7 +368,7 @@ const WEIGHTS: Weighted[] = [
 let lastKind = ''
 
 function pickKind(): string {
-  const options = WEIGHTS.filter((o) => o.kind !== lastKind)
+  const options = WEIGHTS.filter((o) => isSeeded() || o.kind !== lastKind)
   const sum = options.reduce((a, o) => a + o.w, 0)
   let r = Math.random() * sum
   for (const o of options) {

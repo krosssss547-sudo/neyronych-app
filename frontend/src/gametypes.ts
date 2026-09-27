@@ -23,7 +23,9 @@ export type Stimulus =
 //  'tap'      — сетка tap.cells; игрок тапает клетку. question — инструкция. correct = индекс клетки строкой ('7').
 //  'schulte'  — таблица Шульте: игрок тапает числа по порядку 1..N. correct = 'ok'.
 //  'corsi'    — «Саймон»: подсвечивается последовательность клеток, игрок повторяет. correct = 'ok'.
-export type Layout = 'choice' | 'memorize' | 'tap' | 'schulte' | 'corsi'
+//  'nback'    — N-назад: клетки загораются по одной, игрок жмёт «Совпало», если клетка та же,
+//               что n шагов назад. correct = 'ok' (итог считает App по попаданиям и ложным нажатиям).
+export type Layout = 'choice' | 'memorize' | 'tap' | 'schulte' | 'corsi' | 'nback'
 
 export type GameTask = {
   topic: GameTopic
@@ -50,6 +52,7 @@ export type GameTask = {
   tap?: { cells: Cell[]; cols: number }
   schulte?: { numbers: number[]; cols: number }    // numbers — в том порядке, как лежат в сетке; cols*cols штук
   corsi?: { size: number; sequence: number[] }     // size — сторона сетки (3 → 9 клеток), sequence — индексы 0..size*size-1
+  nback?: { n: number; size: number; sequence: number[]; stepMs: number }  // sequence — индексы клеток по шагам
 }
 
 export const XP_BY_LEVEL: Record<Level, number> = { 1: 10, 2: 15, 3: 25 }
